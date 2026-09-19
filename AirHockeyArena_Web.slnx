@@ -1,0 +1,6 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Emscripten" />
+  </Configurations>
+  <Project Path="AirHockeyArena_Web/AirHockeyArena_Web.vcxproj" Id="47df40e0-bb67-4f0b-8d5b-cb4bdb48b68c" />
+</Solution>

@@ -1,4 +1,4 @@
-# include <Siv3D.hpp>
+﻿# include <Siv3D.hpp>
 # include "ArenaPhysics.hpp"
 # include "WebRTCP2PClient.hpp"
 
@@ -24,7 +24,7 @@ namespace
     constexpr double CourtScale = 1.16;
     const RectF Court{
         (720.0 - arena::Width * CourtScale) / 2.0,
-        170,
+        200,
         arena::Width * CourtScale,
         arena::Height * CourtScale
     };
@@ -37,6 +37,7 @@ namespace
     const ColorF Outline{ 0.24, 0.29, 0.38 };
     const ColorF Red{ 0.92, 0.22, 0.32 };
     const ColorF Blue{ 0.15, 0.40, 0.88 };
+    const ColorF Yellow{ 1.0, 0.78, 0.16 };
 
     Vec2 ToViewPosition(Vec2 position, const int side)
     {
@@ -322,6 +323,7 @@ namespace
         double soundCooldown = 0;
         double wallSoundCooldown = 0;
         Vec2 ringPosition;
+        ColorF ringColor = Red;
 
         int rally = 0;
         int bestRally = 0;
@@ -384,13 +386,14 @@ namespace
             }
         }
 
-        void PaddleContact(const Vec2 position)
+        void PaddleContact(const Vec2 position, const ColorF paddleColor)
         {
             ++rally;
             bestRally = Max(bestRally, rally);
             ring = 0.35;
             ringPosition = position;
-            Burst(position, Red, 10);
+            ringColor = paddleColor;
+            Burst(position, paddleColor, 10);
 
             if (!muted && soundCooldown <= 0)
             {
@@ -401,7 +404,7 @@ namespace
 
         void WallContact(const Vec2 position)
         {
-            Burst(position, Blue, 5);
+            Burst(position, Yellow, 5);
 
             if (!muted && wallSoundCooldown <= 0)
             {
@@ -479,7 +482,7 @@ namespace
                 Circle{
                     ToViewPosition(ringPosition, side),
                     25 + (1 - ring / 0.35) * 45
-                }.drawFrame(2, ColorF{ Red, ring / 0.35 });
+                }.drawFrame(2, ColorF{ ringColor, ring / 0.35 });
             }
         }
     };
@@ -832,6 +835,12 @@ void Main()
     FontAsset::Register(U"Micro", 12);
     FontAsset::Register(U"Icon", 24, Typeface::Icon_Awesome_Solid);
 
+    MSRenderTexture gameRenderTexture{
+        Size{ 720, 1200 },
+        TextureFormat::R8G8B8A8_Unorm,
+        HasDepth::No
+    };
+
     MatchState game;
     Effects effects;
     ArenaClient client;
@@ -839,6 +848,7 @@ void Main()
     bool practice = true;
     bool online = false;
     bool mouseControl = false;
+    double mousePaddleOffsetY = 0;
     bool awaitingGoal = false;
     bool readyConnection = false;
 
@@ -1380,7 +1390,10 @@ void Main()
                     impact.side
                 ));
             awaitingGoal = false;
-            effects.PaddleContact(game.puck);
+            effects.PaddleContact(
+                game.puck,
+                impact.side == 0 ? Red : Blue
+            );
         }
         else if (messageID == GoalPacketId && side == 0)
         {
@@ -1468,9 +1481,28 @@ void Main()
         const bool active = !spectator && (cpuActive || linked);
         const bool spectatorPlayback = spectator && roomConnected;
 
-        if (MouseL.down())
+        const RectF rematchControl{
+            Court.x + Court.w - 160,
+            Court.y - 54,
+            160,
+            46
+        };
+        const RectF paddlePointerArea{
+            Court.x,
+            Court.y,
+            Court.w,
+            Scene::Height() - Court.y
+        };
+
+        if (MouseL.down()
+            && screen == Screen::Game
+            && paddlePointerArea.contains(Cursor::PosF())
+            && !rematchControl.contains(Cursor::PosF()))
         {
-            mouseControl = Court.contains(Cursor::PosF());
+            const Vec2 cursorWorld = ToWorldPosition(Cursor::PosF(), side);
+            mousePaddleOffsetY =
+                cursorWorld.y - game.PaddlePosition(side).y;
+            mouseControl = true;
         }
 
         if (!MouseL.pressed())
@@ -1504,7 +1536,11 @@ void Main()
 
             if (mouseControl)
             {
-                targetPosition = ToWorldPosition(Cursor::PosF(), side);
+                const Vec2 cursorWorld = ToWorldPosition(Cursor::PosF(), side);
+                targetPosition = {
+                    cursorWorld.x,
+                    cursorWorld.y - mousePaddleOffsetY
+                };
             }
 
             targetPosition =
@@ -1652,7 +1688,13 @@ void Main()
 
             if (result.paddleHit)
             {
-                effects.PaddleContact((result.contact));
+                const int hitSide = spectator
+                    ? result.paddleSide
+                    : (result.paddleSide == 0 ? side : 1 - side);
+                effects.PaddleContact(
+                    result.contact,
+                    hitSide == 0 ? Red : Blue
+                );
             }
 
             if (result.wallHits)
@@ -1742,9 +1784,13 @@ void Main()
             game.phase == Phase::Playing && !awaitingGoal
         );
 
-        // ---------------------------------------------------------------------
-        // Portrait UI
-        // ---------------------------------------------------------------------
+        gameRenderTexture.clear(Ink);
+        {
+            const ScopedRenderTarget2D renderTarget{ gameRenderTexture };
+
+            // -----------------------------------------------------------------
+            // Portrait UI
+            // -----------------------------------------------------------------
 
         for (int x = 0; x < 720; x += 48)
         {
@@ -1753,7 +1799,7 @@ void Main()
 
         if (screen == Screen::Lobby)
         {
-            if (DrawButtonWithIcon({ 36, 25, 210, 56 }, U"\uf060", U"ゲームへ戻る"))
+            if (DrawIconButton({ 36, 25, 56, 56 }, U"\uf060"))
             {
                 screen = Screen::Game;
             }
@@ -1787,7 +1833,7 @@ void Main()
                 }
             }
 
-            DrawPanel({ 36, 104, 648, 54 });
+            DrawPanel({ 36, 104, 576, 54 });
             FontAsset(U"Small")(U"公開中の部屋").draw(56, 122, Text);
             if (DrawRefreshButton(
                     { 650, 131 },
@@ -2009,9 +2055,9 @@ void Main()
                     ? U"再試合 {}/2"_fmt(static_cast<int>(rematchReadyCount))
                     : U"再試合";
             const RectF rematchRect{
-                Court.x + Court.w - 160,
-                Court.y + Court.h + 22,
-                160,
+                Court.x + Court.w - 100,
+                Court.y - 74,
+                100,
                 46
             };
             const ColorF selfRematchColor =
@@ -2034,7 +2080,7 @@ void Main()
                     rematchRect,
                     rematchLabel,
                     rematchAvailable,
-                    true
+                    false
                 );
 
             if (rematchClicked)
@@ -2075,6 +2121,10 @@ void Main()
                 }
             }
 
+            }
         }
+		Graphics2D::Flush();
+        gameRenderTexture.resolve();
+        gameRenderTexture.draw();
     }
 }

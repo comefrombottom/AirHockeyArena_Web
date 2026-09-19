@@ -112,6 +112,7 @@ namespace arena
     struct Result
     {
         bool paddleHit = false;
+        int paddleSide = -1;
         int goal = 0;
         int wallHits = 0;
         s3d::Vec2 contact{};
@@ -446,6 +447,7 @@ namespace arena
                     reflect(puck, unit(corrected - paddle), paddleVelocity);
                     puck.p = corrected;
                     result.paddleHit = true;
+                    result.paddleSide = 0;
                     result.contact = puck.p;
                 }
 
@@ -461,6 +463,7 @@ namespace arena
                     reflect(puck, unit(corrected - secondPaddle), secondVelocity);
                     puck.p = corrected;
                     result.paddleHit = true;
+                    result.paddleSide = 1;
                     result.contact = puck.p;
                 }
 
@@ -556,6 +559,7 @@ namespace arena
                         hit.kind == 2 ? paddleVelocity : secondVelocity
                     );
                     result.paddleHit = true;
+                    result.paddleSide = (hit.kind == 2) ? 0 : 1;
                     result.contact = puck.p;
                 }
                 else
@@ -590,6 +594,7 @@ namespace arena
             reflect(puck, unit(corrected - paddleEnd), paddleVelocity);
             puck.p = corrected;
             result.paddleHit = true;
+            result.paddleSide = 0;
             result.contact = puck.p;
         }
 
@@ -605,6 +610,7 @@ namespace arena
             reflect(puck, unit(corrected - secondEnd), secondVelocity);
             puck.p = corrected;
             result.paddleHit = true;
+            result.paddleSide = 1;
             result.contact = puck.p;
         }
 

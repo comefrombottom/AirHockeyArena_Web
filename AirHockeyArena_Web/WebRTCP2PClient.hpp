@@ -43,6 +43,13 @@ namespace s3d
 			RoomPropertyTable properties;
 		};
 
+		struct JoinRandomRoomOptions
+		{
+			RoomPropertyTable requiredRoomProperties;
+			Optional<int32> expectedParticipantCount;
+			Optional<int32> expectedMaxParticipants;
+		};
+
 		struct RoomInfo
 		{
 			RoomID id;
@@ -175,6 +182,16 @@ namespace s3d
 		/// @brief Roomがあれば入室し、なければ作成して入室します。
 		bool joinOrCreateRoom(const RoomID& roomID);
 		bool joinOrCreateRoom(const RoomID& roomID, const RoomCreationInfo& info);
+
+		/// @brief 条件に一致する公開Roomへランダムに入室します。
+		bool joinRandom(const JoinRandomRoomOptions& options = {});
+
+		/// @brief 条件に一致するRoomへ入室し、なければ指定情報でRoomを作成します。
+		bool joinRandomOrCreateRoom(
+			const JoinRandomRoomOptions& options,
+			const RoomID& createRoomID,
+			const RoomCreationInfo& info
+		);
 
 		/// @brief 明示的にRoomを退出します。自動再接続も停止します。
 		void leaveRoom();

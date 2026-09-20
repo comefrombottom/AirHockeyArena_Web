@@ -10,7 +10,7 @@ mergeInto(LibraryManager.library, {
         },
 
         get: function (handle) {
-            return this.clients[handle] ?? null;
+            return this.clients[handle] || null;
         },
 
         remove: function (handle) {
@@ -78,12 +78,15 @@ mergeInto(LibraryManager.library, {
             }
 
             defaultSignalingUrl() {
-                const scheme = globalThis.location?.protocol === "https:" ? "wss:" : "ws:";
-                return `${scheme}//${globalThis.location?.host || "localhost"}/signal`;
+                const location = globalThis.location || {};
+                const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+                return `${scheme}//${location.host || "localhost"}/signal`;
             }
 
             createId() {
-                return globalThis.crypto?.randomUUID?.()
+                return (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+                    ? globalThis.crypto.randomUUID()
+                    : null)
                     || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
             }
 
@@ -105,15 +108,17 @@ mergeInto(LibraryManager.library, {
                 this.socket = null;
             }
 
-            start(roomId, operation, creationInfo) {
-                if (this.state !== "disconnected") return false;
+            start(roomId, operation, creationInfo, fromMatchmaking = false) {
+                if (this.state !== "disconnected" && !fromMatchmaking) return false;
                 this.roomId = roomId;
                 this.operation = operation;
                 this.roomInfo = operation === "join"
                     ? { listed: true, isOpen: true, maxParticipants: 8, properties: {} }
                     : this.normalizeRoomInfo(creationInfo);
-                this.state = "joiningRoom";
-                this.enqueue({ type: "state", state: this.state });
+                if (this.state !== "joiningRoom") {
+                    this.state = "joiningRoom";
+                    this.enqueue({ type: "state", state: this.state });
+                }
                 this.role = "none";
                 this.hostPeerId = null;
                 this.memberIds.clear();
@@ -126,12 +131,12 @@ mergeInto(LibraryManager.library, {
             }
 
             normalizeRoomInfo(info = {}) {
-                const maxParticipants = Number(info.maxParticipants ?? 8);
+                const maxParticipants = Number(info.maxParticipants == null ? 8 : info.maxParticipants);
                 if (!Number.isInteger(maxParticipants) || maxParticipants < 1 || maxParticipants > 8) {
                     throw new Error("maxParticipants must be between 1 and 8");
                 }
                 const properties = info.properties && typeof info.properties === "object"
-                    ? { ...info.properties } : {};
+                    ? Object.assign({}, info.properties) : {};
                 return {
                     listed: info.listed !== false,
                     isOpen: info.isOpen !== false,
@@ -140,14 +145,83 @@ mergeInto(LibraryManager.library, {
                 };
             }
 
+            startRandom(options = {}, createRoomID = "", creationInfo = {}) {
+                if (this.state !== "disconnected") return false;
+
+                const generation = this.generation;
+                this.roomId = null;
+                this.operation = "join-or-create";
+                this.roomInfo = { listed: true, isOpen: true, maxParticipants: 8, properties: {} };
+                this.role = "none";
+                this.hostPeerId = null;
+                this.memberIds.clear();
+                this.leaveRequested = false;
+                this.rejoinPending = false;
+                this.reconnectAttempts = 0;
+                this.clearReconnectTimer();
+                this.state = "joiningRoom";
+                this.enqueue({ type: "state", state: this.state });
+
+                const url = new URL(this.signalingUrl, (globalThis.location && globalThis.location.href) || undefined);
+                url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+                url.pathname = "/matchmake";
+                url.search = "";
+                url.searchParams.set("applicationId", this.applicationId);
+                const request = {
+                    requiredRoomProperties: options.requiredRoomProperties || {},
+                    allowCreate: Boolean(createRoomID),
+                };
+                if (options.expectedParticipantCount !== undefined
+                    && options.expectedParticipantCount !== null)
+                {
+                    request.expectedParticipantCount = options.expectedParticipantCount;
+                }
+                if (options.expectedMaxParticipants !== undefined
+                    && options.expectedMaxParticipants !== null)
+                {
+                    request.expectedMaxParticipants = options.expectedMaxParticipants;
+                }
+                if (createRoomID) {
+                    request.createRoomID = createRoomID;
+                    request.creationInfo = creationInfo || {};
+                }
+
+                fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    cache: "no-store",
+                    body: JSON.stringify(request),
+                })
+                    .then(async (response) => {
+                        let body = {};
+                        try { body = await response.json(); } catch (error) {}
+                        if (!response.ok) {
+                            const error = new Error(body.message || `HTTP ${response.status}`);
+                            error.code = response.status === 404 ? "room-not-found" : "matchmaking-error";
+                            throw error;
+                        }
+                        return body;
+                    })
+                    .then((body) => {
+                        if (this.leaveRequested || generation !== this.generation) return;
+                        if (!body.roomId) throw new Error("Random room matching returned no room ID");
+                        this.start(body.roomId, "join-or-create", creationInfo, true);
+                    })
+                    .catch((error) => {
+                        if (this.leaveRequested || generation !== this.generation) return;
+                        this.failRoomOperation(error.code || "matchmaking-error", error.message || String(error));
+                    });
+                return true;
+            }
+
             leave() {
                 if (this.state === "disconnected") return;
                 this.leaveRequested = true;
                 this.generation += 1;
                 this.clearReconnectTimer();
                 this.stopHeartbeat();
-                if (this.socket?.readyState === WebSocket.OPEN) {
-                    try { this.socket.send(JSON.stringify({ type: "leave" })); } catch {}
+                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    try { this.socket.send(JSON.stringify({ type: "leave" })); } catch (error) {}
                 }
                 this.closeAllPeers("left", false);
                 this.closeSocket(this.socket, 1000, "Left room");
@@ -164,7 +238,7 @@ mergeInto(LibraryManager.library, {
 
             openSignaling(reconnect, generation) {
                 if (this.leaveRequested || generation !== this.generation || !this.roomId) return;
-                const url = new URL(this.signalingUrl, globalThis.location?.href || undefined);
+                const url = new URL(this.signalingUrl, (globalThis.location && globalThis.location.href) || undefined);
                 url.searchParams.set("room", this.roomId);
                 url.searchParams.set("applicationId", this.applicationId);
                 url.searchParams.set("peer", this.peerId);
@@ -207,7 +281,7 @@ mergeInto(LibraryManager.library, {
                             listed: message.listed !== false,
                             isOpen: message.isOpen !== false,
                             maxParticipants: Number(message.maxParticipants || 8),
-                            properties: { ...(message.config || {}) },
+                            properties: Object.assign({}, message.config || {}),
                         };
                         this.memberIds = new Set(message.peers || []);
                         this.enqueueRoomInfo();
@@ -252,7 +326,7 @@ mergeInto(LibraryManager.library, {
                         }
                         break;
                     case "room-config":
-                        this.roomInfo.properties = { ...(message.config || {}) };
+                        this.roomInfo.properties = Object.assign({}, message.config || {});
                         this.enqueueRoomInfo();
                         break;
                     case "room-open":
@@ -290,16 +364,17 @@ mergeInto(LibraryManager.library, {
                     participantCount: this.memberIds.size + 1,
                     maxParticipants: this.roomInfo.maxParticipants,
                     peers: [...this.memberIds],
-                    properties: { ...this.roomInfo.properties },
+                    properties: Object.assign({}, this.roomInfo.properties),
                 } });
             }
 
             maybeCompleteJoin() {
                 if (this.state !== "joiningRoom" && this.state !== "rejoiningRoom") return;
-                const connected = [...this.peers.values()].filter((peer) => peer.dataChannel?.readyState === "open").length;
+                const connected = [...this.peers.values()].filter((peer) => peer.dataChannel && peer.dataChannel.readyState === "open").length;
+                const hostPeer = this.hostPeerId ? this.peers.get(this.hostPeerId) : null;
                 const ready = this.role === "host"
                     ? this.memberIds.size === 0 || connected > 0
-                    : Boolean(this.hostPeerId && this.peers.get(this.hostPeerId)?.dataChannel?.readyState === "open");
+                    : Boolean(hostPeer && hostPeer.dataChannel && hostPeer.dataChannel.readyState === "open");
                 if (!ready) return;
                 const rejoining = this.rejoinPending;
                 this.state = "inRoom";
@@ -311,7 +386,7 @@ mergeInto(LibraryManager.library, {
                     participantCount: this.memberIds.size + 1,
                     maxParticipants: this.roomInfo.maxParticipants,
                     peers: [...this.memberIds],
-                    properties: { ...this.roomInfo.properties },
+                    properties: Object.assign({}, this.roomInfo.properties),
                 } });
                 this.rejoinPending = false;
             }
@@ -324,7 +399,8 @@ mergeInto(LibraryManager.library, {
                 this.peers.set(remotePeerId, peer);
                 connection.addEventListener("icecandidate", (event) => {
                     if (this.peers.get(remotePeerId) !== peer || !event.candidate) return;
-                    const signal = { type: "candidate", to: remotePeerId, negotiationId: peer.negotiationId, candidate: event.candidate.toJSON?.() || event.candidate };
+                    const candidate = event.candidate.toJSON ? event.candidate.toJSON() : event.candidate;
+                    const signal = { type: "candidate", to: remotePeerId, negotiationId: peer.negotiationId, candidate };
                     if (peer.localDescriptionSent) this.sendSignal(signal); else peer.pendingLocalCandidates.push(signal);
                 });
                 connection.addEventListener("connectionstatechange", () => {
@@ -409,7 +485,7 @@ mergeInto(LibraryManager.library, {
                 channel.addEventListener("message", (event) => {
                     if (this.peers.get(remotePeerId) !== peer || peer.dataChannel !== channel) return;
                     let packet;
-                    try { packet = JSON.parse(typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data)); } catch { return; }
+                    try { packet = JSON.parse(typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data)); } catch (error) { return; }
                     if (!packet || packet.kind !== "app-message" || !Number.isInteger(packet.id) || typeof packet.payload !== "string") return;
                     if (this.role === "host") this.routeApplicationMessage(remotePeerId, packet.id, packet.payload, packet.target);
                     else this.enqueue({ type: "message", from: packet.from || remotePeerId, id: packet.id, payload: packet.payload });
@@ -434,9 +510,10 @@ mergeInto(LibraryManager.library, {
                 if (this.state !== "inRoom" && this.state !== "joiningRoom" && this.state !== "rejoiningRoom") return 1;
                 const packet = { kind: "app-message", id: messageID >>> 0, from: this.peerId, payload, target };
                 if (this.role !== "host") {
-                    const channel = this.peers.get(this.hostPeerId)?.dataChannel;
+                    const hostPeer = this.peers.get(this.hostPeerId);
+                    const channel = hostPeer && hostPeer.dataChannel;
                     if (!channel || channel.readyState !== "open") return 2;
-                    try { channel.send(JSON.stringify(packet)); return 0; } catch { return 2; }
+                    try { channel.send(JSON.stringify(packet)); return 0; } catch (error) { return 2; }
                 }
                 this.routeApplicationMessage(this.peerId, packet.id, packet.payload, packet.target);
                 return 0;
@@ -462,9 +539,10 @@ mergeInto(LibraryManager.library, {
                 if (recipients.has(this.peerId)) this.enqueue({ type: "message", from: sourcePeerId, id: messageID >>> 0, payload });
                 for (const peerId of recipients) {
                     if (peerId === this.peerId) continue;
-                    const channel = this.peers.get(peerId)?.dataChannel;
-                    if (channel?.readyState === "open") {
-                        try { channel.send(packet); } catch {}
+                    const peer = this.peers.get(peerId);
+                    const channel = peer && peer.dataChannel;
+                    if (channel && channel.readyState === "open") {
+                        try { channel.send(packet); } catch (error) {}
                     }
                 }
             }
@@ -483,7 +561,7 @@ mergeInto(LibraryManager.library, {
 
             async refreshRoomList() {
                 try {
-                    const url = new URL(this.signalingUrl, globalThis.location?.href || undefined);
+                    const url = new URL(this.signalingUrl, (globalThis.location && globalThis.location.href) || undefined);
                     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
                     url.pathname = "/rooms";
                     url.search = "";
@@ -555,8 +633,8 @@ mergeInto(LibraryManager.library, {
             }
 
             sendSignal(message) {
-                if (this.socket?.readyState !== WebSocket.OPEN) return false;
-                try { this.socket.send(JSON.stringify(message)); return true; } catch { return false; }
+                if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+                try { this.socket.send(JSON.stringify(message)); return true; } catch (error) { return false; }
             }
 
             removePeer(remotePeerId, reason = "disconnected", notify = true) {
@@ -565,8 +643,8 @@ mergeInto(LibraryManager.library, {
                 this.peers.delete(remotePeerId);
                 if (peer.disconnectedTimer !== null) clearTimeout(peer.disconnectedTimer);
                 const wasOpen = peer.openNotified;
-                try { peer.dataChannel?.close(); } catch {}
-                try { peer.connection.close(); } catch {}
+                try { if (peer.dataChannel) peer.dataChannel.close(); } catch (error) {}
+                try { peer.connection.close(); } catch (error) {}
                 if (notify && wasOpen) this.enqueue({ type: "peer-disconnected", peerId: remotePeerId, reason });
             }
 
@@ -576,7 +654,7 @@ mergeInto(LibraryManager.library, {
 
             closeSocket(socket, code, reason) {
                 if (!socket) return;
-                try { socket.close(code, reason); } catch {}
+                try { socket.close(code, reason); } catch (error) {}
             }
 
             fail(code, message) {
@@ -629,14 +707,33 @@ mergeInto(LibraryManager.library, {
     s3dWebRTCP2PStart__sig: "iiiii",
     s3dWebRTCP2PStart__deps: ["$s3dWebRTCP2PBridge"],
 
+    s3dWebRTCP2PStartRandom: function (handle, options_ptr, create_room_ptr, info_ptr) {
+        const client = s3dWebRTCP2PBridge.get(handle);
+        if (!client) return 0;
+        const options = options_ptr
+            ? JSON.parse(s3dWebRTCP2PBridge.utf32ToString(options_ptr))
+            : {};
+        const createRoomID = create_room_ptr
+            ? s3dWebRTCP2PBridge.utf32ToString(create_room_ptr)
+            : "";
+        const creationInfo = info_ptr
+            ? JSON.parse(s3dWebRTCP2PBridge.utf32ToString(info_ptr))
+            : {};
+        return client.startRandom(options, createRoomID, creationInfo) ? 1 : 0;
+    },
+    s3dWebRTCP2PStartRandom__sig: "iiiii",
+    s3dWebRTCP2PStartRandom__deps: ["$s3dWebRTCP2PBridge"],
+
     s3dWebRTCP2PLeave: function (handle) {
-        s3dWebRTCP2PBridge.get(handle)?.leave();
+        const client = s3dWebRTCP2PBridge.get(handle);
+        if (client) client.leave();
     },
     s3dWebRTCP2PLeave__sig: "vi",
     s3dWebRTCP2PLeave__deps: ["$s3dWebRTCP2PBridge"],
 
     s3dWebRTCP2PUpdate: function (handle, out_ptr, out_size) {
-        const event = s3dWebRTCP2PBridge.get(handle)?.poll();
+        const client = s3dWebRTCP2PBridge.get(handle);
+        const event = client ? client.poll() : null;
         if (!event) return 0;
         const text = JSON.stringify(event);
         return s3dWebRTCP2PBridge.writeUtf8(text, out_ptr, out_size);
@@ -656,13 +753,15 @@ mergeInto(LibraryManager.library, {
     s3dWebRTCP2PSend__deps: ["$s3dWebRTCP2PBridge"],
 
     s3dWebRTCP2PSetProperty: function (handle, key, value_ptr) {
-        return s3dWebRTCP2PBridge.get(handle)?.setProperty(key, s3dWebRTCP2PBridge.utf32ToString(value_ptr)) ? 1 : 0;
+        const client = s3dWebRTCP2PBridge.get(handle);
+        return client && client.setProperty(key, s3dWebRTCP2PBridge.utf32ToString(value_ptr)) ? 1 : 0;
     },
     s3dWebRTCP2PSetProperty__sig: "iiii",
     s3dWebRTCP2PSetProperty__deps: ["$s3dWebRTCP2PBridge"],
 
     s3dWebRTCP2PSetOpen: function (handle, is_open) {
-        return s3dWebRTCP2PBridge.get(handle)?.setOpen(Boolean(is_open)) ? 1 : 0;
+        const client = s3dWebRTCP2PBridge.get(handle);
+        return client && client.setOpen(Boolean(is_open)) ? 1 : 0;
     },
     s3dWebRTCP2PSetOpen__sig: "iii",
     s3dWebRTCP2PSetOpen__deps: ["$s3dWebRTCP2PBridge"],

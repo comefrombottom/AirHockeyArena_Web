@@ -4,6 +4,27 @@
 
 # include <functional>
 
+#if SIV3D_PLATFORM(WEB)
+# include <emscripten.h>
+EM_JS(void, ToggleSiv3DFullscreen, (),
+{
+    if (typeof globalThis.siv3dToggleFullscreen === "function")
+    {
+        globalThis.siv3dToggleFullscreen();
+    }
+});
+EM_JS(int, IsSiv3DFullscreen, (),
+{
+    return (document.fullscreenElement || document.webkitFullscreenElement) ? 1 : 0;
+});
+#else
+void ToggleSiv3DFullscreen() {}
+bool IsSiv3DFullscreen()
+{
+    return Window::GetState().fullscreen;
+}
+#endif
+
 namespace
 {
     using Client = s3d::WebRTCP2PClient;
@@ -461,7 +482,7 @@ namespace
                 && (trail.num_points() == 0
                     || trail.back().pos.distanceFrom(viewPuck) > 3))
             {
-                trail.add(viewPuck, ColorF{ 1.0, 0.76, 0.16, 0.26 }, 10.0 * CourtScale);
+                trail.add(viewPuck, ColorF{ 1.0, 0.76, 0.16, 0.26 }, 20.0 * CourtScale);
             }
         }
 
@@ -963,27 +984,10 @@ void Main()
             return;
         }
 
-        for (const auto& roomInfo : client.getRoomList())
-        {
-            const bool hasOneWaitingPlayer = roomInfo.participantCount == 1;
-            const bool hasSpace = roomInfo.participantCount < roomInfo.maxParticipants;
-
-            if (roomInfo.listed && roomInfo.isOpen && hasOneWaitingPlayer && hasSpace)
-            {
-                matchmakingRequestStarted = client.joinRoom(roomInfo.id);
-                if (matchmakingRequestStarted)
-                {
-                    matchmakingRetryPending = false;
-                    client.notice = U"対戦相手を探しています…";
-                }
-                else
-                {
-                    matchmakingRetryPending = true;
-                    roomListRefreshClock = 0;
-                }
-                return;
-            }
-        }
+        Client::JoinRandomRoomOptions options;
+        options.requiredRoomProperties[1] = U"Neon Rally / v2 / matchmaking";
+        options.expectedParticipantCount = 1;
+        options.expectedMaxParticipants = 8;
 
         Client::RoomCreationInfo creationInfo;
         creationInfo.listed = true;
@@ -991,7 +995,8 @@ void Main()
         creationInfo.maxParticipants = 8;
         creationInfo.properties[1] = U"Neon Rally / v2 / matchmaking";
 
-        matchmakingRequestStarted = client.createRoom(
+        matchmakingRequestStarted = client.joinRandomOrCreateRoom(
+            options,
             Client::GenerateRandomRoomId(),
             creationInfo
         );
@@ -1022,7 +1027,7 @@ void Main()
         matchmakingRetryPending = false;
         online = false;
         client.notice = U"対戦相手を探しています…";
-        RefreshRoomList();
+        StartMatchmakingRequest();
     };
 
     auto LeaveOnlineRoom = [&]
@@ -1395,7 +1400,9 @@ void Main()
                 impact.side == 0 ? Red : Blue
             );
         }
-        else if (messageID == GoalPacketId && side == 0)
+        else if (messageID == GoalPacketId
+            && side == 0
+            && sender == activeGuestPeerID)
         {
             GoalPacket goal;
             reader(goal);
@@ -1406,8 +1413,8 @@ void Main()
                 && game.phase == Phase::Playing
                 && goal.position.x >= arena::GoalLeft + arena::Radius - 0.01
                 && goal.position.x <= arena::GoalRight - arena::Radius + 0.01
-                && ((goal.scorer == 0 && goal.position.y <= 0.01)
-                    || (goal.scorer == 1 && goal.position.y >= arena::Height - 0.01));
+                && goal.scorer == 0
+                && goal.position.y <= 0.01;
 
             if (validGoal)
             {
@@ -1416,7 +1423,7 @@ void Main()
             }
         }
     };
-
+	
     while (System::Update())
     {
         client.update();
@@ -1436,11 +1443,10 @@ void Main()
 
         if (matchmaking
             && matchmakingRetryPending
-            && !roomListLoading
             && roomListRefreshClock >= 1.0)
         {
             matchmakingRetryPending = false;
-            RefreshRoomList();
+            StartMatchmakingRequest();
         }
 
         if (online && client.getState() == Client::ClientState::Disconnected)
@@ -1723,23 +1729,31 @@ void Main()
 
             if (result.goal)
             {
-                if (authority)
+                const bool localPlayerJudgesGoal =
+                    !spectator
+                    && (cpuActive
+                        || (client.getRole() == Client::Role::Host
+                            && result.goal == 2)
+                        || (client.getRole() == Client::Role::Client
+                            && result.goal == 1));
+
+                if (localPlayerJudgesGoal)
                 {
+                    if (online && client.getRole() == Client::Role::Client)
+                    {
+                        (void)client.send(
+                            GoalPacketId,
+                            Client::SendTarget::Others(),
+                            GoalPacket{
+                                game.match,
+                                game.round,
+                                result.goal - 1,
+                                game.puck
+                            }
+                        );
+                    }
+
                     AwardGoal(result.goal - 1);
-                }
-                else if (!spectator)
-                {
-                    awaitingGoal = true;
-                    (void)client.send(
-                        GoalPacketId,
-                        Client::SendTarget::Others(),
-                        GoalPacket{
-                            game.match,
-                            game.round,
-                            result.goal - 1,
-                            game.puck
-                        }
-                    );
                 }
                 else
                 {
@@ -1932,11 +1946,24 @@ void Main()
             const String onlineLabel = spectator
                 ? U"観戦中"
                 : (matchmaking
-                    ? U"オンライン検索中…"
+                    ? U"待機中…"
                     : (online && linked ? U"オンライン対戦中" : U"オンライン対戦"));
 
+            const bool fullscreen = IsSiv3DFullscreen();
+            if (DrawIconButton(
+                    { 36, 24, 56, 56 },
+                    fullscreen ? U"\uf066" : U"\uf065"
+                ))
+            {
+#if SIV3D_PLATFORM(WEB)
+                ToggleSiv3DFullscreen();
+#else
+                Window::SetFullscreen(!Window::GetState().fullscreen);
+#endif
+            }
+
             if (DrawButton(
-                    { 36, 24, 540, 56 },
+                    { 104, 24, 472, 56 },
                     onlineLabel,
                     matchmaking || disconnected || online,
                     !online && !matchmaking

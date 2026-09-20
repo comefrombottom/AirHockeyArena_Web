@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en-us">
+<html>
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -13,6 +13,12 @@
         padding-top: env(safe-area-inset-top, 0px);
         padding-left: env(safe-area-inset-left, 0px);
         background-color: gray;
+        -ms-touch-action: none;
+        touch-action: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        -webkit-user-select: none;
+        user-select: none;
       }
 
       div.dummy {
@@ -72,6 +78,12 @@
         left: 0px; top: 0px; right: 0px;
         border: 1px solid rgb(120, 120, 120);
         background-color: rgb(60, 60, 60);
+        display: none;
+      }
+
+      /* The game draws its own controls. */
+      #footer-control {
+        display: none !important;
       }
 
       #progress {
@@ -143,6 +155,11 @@
 
       .st1:hover {
         fill:#FBFBFB;
+      }
+
+      /* The game draws its own controls. */
+      #footer-control {
+        display: none !important;
       }
 
       .playground-overlay {
@@ -275,6 +292,7 @@
     </div>
     <script>
       const appContainer = document.querySelector("#app");
+      const progressFrameElement = document.querySelector("#progress-frame");
       const progressElement = document.querySelector("#progress");
       const canvasContainerElement = document.querySelector("#canvas-container");
       const soundOnIcon = document.querySelector('#sound-on');
@@ -293,8 +311,25 @@
         fullscreenFunction.call(canvasContainerElement);
       }
 
+      function toggleFullscreen() {
+        const isFullscreen = document.fullscreenElement
+          || document.webkitFullscreenElement;
+        if (isFullscreen) {
+          const exitFullscreen = document.exitFullscreen
+            || document.webkitExitFullscreen;
+          if (exitFullscreen) {
+            exitFullscreen.call(document);
+          }
+        } else {
+          enterFullscreen();
+        }
+      }
+
+      globalThis.siv3dEnterFullscreen = enterFullscreen;
+      globalThis.siv3dToggleFullscreen = toggleFullscreen;
+
       function onExitFullscreen() {
-        if (document.fullscreen) {
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
           // switched to normal
           doResize();
         } else {
@@ -326,6 +361,7 @@
         }
 
         gainNode = audioCtx.createGain();
+        gainNode.gain.value = 1.0;
         audioSource.disconnect(audioCtx.destination);
         audioSource.connect(gainNode);
         gainNode.connect(audioCtx.destination);
@@ -364,6 +400,19 @@
         soundOffIcon.style.display = "inline";
       }
 
+      async function resumeAudioContext() {
+        if (audioCtx && audioCtx.state == "suspended") {
+          try {
+            await audioCtx.resume();
+          } catch (error) {
+            // The browser may require another user gesture.
+          }
+        }
+      }
+
+      window.addEventListener("pointerdown", resumeAudioContext, { capture: true, passive: true });
+      window.addEventListener("keydown", resumeAudioContext, { capture: true });
+
       let hasRaiseRuntimeError = false;
 
       function handleRuntimeError(e) {
@@ -372,6 +421,7 @@
         progressElement.classList.add('progress-error');
         progressElement.style.width = '100%';
         progressElement.hidden = false;
+        progressFrameElement.style.display = 'block';
 
         hasRaiseRuntimeError = true;
       }
@@ -413,8 +463,10 @@
             text = m[1];
             progressElement.style.width = `${parseInt(m[2]) * 100 / parseInt(m[4])}%`;
             progressElement.hidden = false;   
+            progressFrameElement.style.display = 'block';
           } else if (!hasRaiseRuntimeError) { 
             progressElement.hidden = true;
+            progressFrameElement.style.display = 'none';
           }
         },
         totalDependencies: 0,
@@ -462,12 +514,12 @@
           overlay.hidden = true;
 
           Options.canvas.hidden = false;
-          (window.Runtime ?? window.Module)(Options);
+          (window.Runtime || window.Module)(Options);
         });
       } else {
         document.querySelector("script[async]").addEventListener('load', function() {
           Options.canvas.hidden = false;
-          (window.Runtime ?? window.Module)(Options);
+          (window.Runtime || window.Module)(Options);
         });
       }
     </script>

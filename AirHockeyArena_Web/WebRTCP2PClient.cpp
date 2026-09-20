@@ -11,6 +11,7 @@ namespace
 		int32 s3dWebRTCP2PCreate(const char32* options);
 		void s3dWebRTCP2PDestroy(int32 handle);
 		int32 s3dWebRTCP2PStart(int32 handle, int32 operation, const char32* roomID, const char32* roomInfo);
+		int32 s3dWebRTCP2PStartRandom(int32 handle, const char32* options, const char32* createRoomID, const char32* roomInfo);
 		void s3dWebRTCP2PLeave(int32 handle);
 		int32 s3dWebRTCP2PUpdate(int32 handle, char* output, int32 outputSize);
 		int32 s3dWebRTCP2PSend(int32 handle, uint32 messageID, const void* payload, int32 payloadSize, int32 targetType, const char32* peerIDs);
@@ -25,6 +26,39 @@ namespace
 		for (const auto& [key, value] : properties)
 		{
 			json[s3d::Format(key)] = value;
+		}
+		return json.formatMinimum();
+	}
+
+	s3d::String MakeJoinRandomJSON(
+		const Client::JoinRandomRoomOptions& options,
+		const Client::RoomID& createRoomID,
+		const Client::RoomCreationInfo& creationInfo,
+		const bool allowCreate
+	)
+	{
+		s3d::JSON json = s3d::JSON::Parse(U"{}", s3d::AllowExceptions::No);
+		json[U"requiredRoomProperties"] = s3d::JSON::Parse(
+			MakePropertiesJSON(options.requiredRoomProperties),
+			s3d::AllowExceptions::No
+		);
+		if (options.expectedParticipantCount)
+			json[U"expectedParticipantCount"] = *options.expectedParticipantCount;
+		if (options.expectedMaxParticipants)
+			json[U"expectedMaxParticipants"] = *options.expectedMaxParticipants;
+		json[U"allowCreate"] = allowCreate;
+		if (allowCreate)
+		{
+			json[U"createRoomID"] = createRoomID;
+			s3d::JSON creation = s3d::JSON::Parse(U"{}", s3d::AllowExceptions::No);
+			creation[U"listed"] = creationInfo.listed;
+			creation[U"isOpen"] = creationInfo.isOpen;
+			creation[U"maxParticipants"] = creationInfo.maxParticipants;
+			creation[U"properties"] = s3d::JSON::Parse(
+				MakePropertiesJSON(creationInfo.properties),
+				s3d::AllowExceptions::No
+			);
+			json[U"creationInfo"] = std::move(creation);
 		}
 		return json.formatMinimum();
 	}
@@ -411,6 +445,46 @@ namespace s3d
 		json[U"maxParticipants"] = info.maxParticipants;
 		json[U"properties"] = JSON::Parse(MakePropertiesJSON(info.properties), AllowExceptions::No);
 		return s3dWebRTCP2PStart(m_impl->handle, 2, roomID.data(), json.formatMinimum().data()) != 0;
+	}
+
+	bool WebRTCP2PClient::joinRandom(const JoinRandomRoomOptions& options)
+	{
+		const String optionsJSON = MakeJoinRandomJSON(
+			options,
+			{},
+			RoomCreationInfo{},
+			false
+		);
+		return s3dWebRTCP2PStartRandom(
+			m_impl->handle,
+			optionsJSON.data(),
+			U"",
+			nullptr
+		) != 0;
+	}
+
+	bool WebRTCP2PClient::joinRandomOrCreateRoom(
+		const JoinRandomRoomOptions& options,
+		const RoomID& createRoomID,
+		const RoomCreationInfo& info
+	)
+	{
+		const String optionsJSON = MakeJoinRandomJSON(
+			options,
+			createRoomID,
+			info,
+			true
+		);
+		const String creationJSON = JSON::Parse(
+			MakeJoinRandomJSON(options, createRoomID, info, true),
+			AllowExceptions::No
+		)[U"creationInfo"].formatMinimum();
+		return s3dWebRTCP2PStartRandom(
+			m_impl->handle,
+			optionsJSON.data(),
+			createRoomID.data(),
+			creationJSON.data()
+		) != 0;
 	}
 
 	void WebRTCP2PClient::leaveRoom() { s3dWebRTCP2PLeave(m_impl->handle); }

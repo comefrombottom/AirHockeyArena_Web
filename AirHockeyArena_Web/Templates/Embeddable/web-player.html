@@ -366,6 +366,7 @@
         audioSource.connect(gainNode);
         gainNode.connect(audioCtx.destination);
         audioCtx.addEventListener("statechange", updateAudioStatus);
+        void resumeAudioContext();
       }
 
       function updateAudioStatus() {
@@ -404,14 +405,21 @@
         if (audioCtx && audioCtx.state == "suspended") {
           try {
             await audioCtx.resume();
+            updateAudioStatus();
           } catch (error) {
             // The browser may require another user gesture.
           }
         }
       }
 
-      window.addEventListener("pointerdown", resumeAudioContext, { capture: true, passive: true });
-      window.addEventListener("keydown", resumeAudioContext, { capture: true });
+      function requestAudioResume() {
+        void resumeAudioContext();
+      }
+
+      window.addEventListener("pointerdown", requestAudioResume, { capture: true, passive: true });
+      window.addEventListener("touchstart", requestAudioResume, { capture: true, passive: true });
+      window.addEventListener("click", requestAudioResume, { capture: true, passive: true });
+      window.addEventListener("keydown", requestAudioResume, { capture: true });
 
       let hasRaiseRuntimeError = false;
 

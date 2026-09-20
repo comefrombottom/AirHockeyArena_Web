@@ -430,7 +430,9 @@
       }
 
       window.addEventListener("pointerdown", requestAudioResume, { capture: true, passive: true });
+      window.addEventListener("pointermove", requestAudioResume, { capture: true, passive: true });
       window.addEventListener("touchstart", requestAudioResume, { capture: true, passive: true });
+      window.addEventListener("touchmove", requestAudioResume, { capture: true, passive: true });
       window.addEventListener("click", requestAudioResume, { capture: true, passive: true });
       window.addEventListener("keydown", requestAudioResume, { capture: true });
 

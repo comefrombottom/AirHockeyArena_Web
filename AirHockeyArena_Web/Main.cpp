@@ -655,14 +655,12 @@ namespace
         const double contentWidth = iconWidth + gap + labelWidth;
         const double contentLeft = rect.center().x - contentWidth / 2;
 
-        FontAsset(U"Icon")(icon).draw(
-            contentLeft,
-            rect.center().y - 12,
+        FontAsset(U"Icon")(icon).drawAt(
+            Vec2{ contentLeft + iconWidth / 2, rect.center().y },
             textColor
         );
-        FontAsset(U"Body")(label).draw(
-            contentLeft + iconWidth + gap,
-            rect.center().y - 10,
+        FontAsset(U"Body")(label).drawAt(
+            Vec2{ contentLeft + iconWidth + gap + labelWidth / 2, rect.center().y },
             textColor
         );
 
@@ -827,7 +825,7 @@ namespace
             serveToward == 0 ? 420.0 : -420.0
         };
         game.phase = Phase::Countdown;
-        game.timer = 2.4;
+        game.timer = 3.0;
     }
 
     void ResetMatch(MatchState& game)

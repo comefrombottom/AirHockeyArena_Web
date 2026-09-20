@@ -414,14 +414,19 @@
         soundOffIcon.style.display = "inline";
       }
 
-      async function resumeAudioContext() {
-        if (audioCtx && audioCtx.state != "running") {
-          try {
-            await audioCtx.resume();
-            updateAudioStatus();
-          } catch (error) {
+      function resumeAudioContext() {
+        if (!audioCtx || audioCtx.state == "running") {
+          return;
+        }
+
+        // Call resume directly from the input event stack. Some mobile
+        // browsers do not preserve the user-activation state through an
+        // async function boundary.
+        const resumePromise = audioCtx.resume();
+        if (resumePromise && typeof resumePromise.then == "function") {
+          resumePromise.then(updateAudioStatus).catch(function () {
             // The browser may require another user gesture.
-          }
+          });
         }
       }
 
@@ -431,8 +436,10 @@
 
       window.addEventListener("pointerdown", requestAudioResume, { capture: true, passive: true });
       window.addEventListener("pointermove", requestAudioResume, { capture: true, passive: true });
+      window.addEventListener("pointerup", requestAudioResume, { capture: true, passive: true });
       window.addEventListener("touchstart", requestAudioResume, { capture: true, passive: true });
       window.addEventListener("touchmove", requestAudioResume, { capture: true, passive: true });
+      window.addEventListener("touchend", requestAudioResume, { capture: true, passive: true });
       window.addEventListener("click", requestAudioResume, { capture: true, passive: true });
       window.addEventListener("keydown", requestAudioResume, { capture: true });
 

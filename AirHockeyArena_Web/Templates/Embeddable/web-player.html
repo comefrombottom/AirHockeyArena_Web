@@ -354,7 +354,7 @@
         /** @type { ScriptProcessorNode } */
         const audioSource = Options["getCurrentAudioSource"]();
 
-        if (audioCtx.state == "suspended") {
+        if (audioCtx.state != "running") {
           showSoundOffIcon();
         } else {
           showSoundOnIcon();
@@ -377,15 +377,28 @@
         }
       }
       
-      async function toggleAudioContext() {  
-        if (audioCtx.state != "running") {
+      async function toggleAudioContext() {
+        if (!audioCtx || !gainNode) {
           return;
         }
 
-        if (gainNode.gain.value == 1.0) {
+        if (audioCtx.state != "running") {
+          try {
+            await audioCtx.resume();
+          } catch (error) {
+            showSoundOffIcon();
+            return;
+          }
+
+          // The button represents "sound on" while the context is suspended.
+          // Do not toggle back to muted after successfully resuming it.
+          if (audioCtx.state == "running") {
+            gainNode.gain.value = 1.0;
+          }
+        } else if (gainNode.gain.value == 1.0) {
           gainNode.gain.value = 0.0;
         } else {
-          gainNode.gain.value = 1.0;     
+          gainNode.gain.value = 1.0;
         }
 
         updateAudioStatus();
@@ -402,7 +415,7 @@
       }
 
       async function resumeAudioContext() {
-        if (audioCtx && audioCtx.state == "suspended") {
+        if (audioCtx && audioCtx.state != "running") {
           try {
             await audioCtx.resume();
             updateAudioStatus();

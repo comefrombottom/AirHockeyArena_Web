@@ -840,7 +840,7 @@ namespace
 
 void Main()
 {
-    Window::SetTitle(U"Air Hockey Arena — Neon Rally");
+    Window::SetTitle(U"Air Hockey Arena");
     Window::SetStyle(WindowStyle::Sizable);
     Window::Resize(720, 1200);
     Scene::SetResizeMode(ResizeMode::Keep);

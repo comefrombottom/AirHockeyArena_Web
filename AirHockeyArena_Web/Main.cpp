@@ -93,6 +93,7 @@ namespace
 
     enum class Screen : uint8
     {
+        Title,
         Game,
         Lobby,
     };
@@ -871,7 +872,7 @@ void Main()
     bool awaitingGoal = false;
     bool readyConnection = false;
 
-    Screen screen = Screen::Game;
+    Screen screen = Screen::Title;
     bool matchmaking = false;
     bool matchmakingRequestStarted = false;
     bool matchmakingRetryPending = false;
@@ -891,10 +892,6 @@ void Main()
     double phaseAge = 0;
     int lastCountdown = -1;
     double roomListRefreshClock = 5.0;
-
-    ResetMatch(game);
-    spectatorHostPaddle = game.hostPaddle;
-    spectatorGuestPaddle = game.guestPaddle;
 
     auto ClearRematchState = [&]
     {
@@ -1425,6 +1422,49 @@ void Main()
     while (System::Update())
     {
         client.update();
+
+        if (screen == Screen::Title)
+        {
+            if (MouseL.down())
+            {
+                ResetMatch(game);
+                spectatorHostPaddle = game.hostPaddle;
+                spectatorGuestPaddle = game.guestPaddle;
+                phaseAge = 0;
+                lastCountdown = -1;
+                screen = Screen::Game;
+            }
+
+            gameRenderTexture.clear(Ink);
+            {
+                const ScopedRenderTarget2D renderTarget{ gameRenderTexture };
+
+                for (int x = 0; x < 720; x += 48)
+                {
+                    Line{ x, 0, x, 1200 }.draw(
+                        1,
+                        ColorF{ 0.18, 0.49, 0.82, 0.045 }
+                    );
+                }
+
+                FontAsset(U"Display")(U"AIR HOCKEY")
+                    .drawAt(Vec2{ 360, 430 }, Text);
+                FontAsset(U"Display")(U"ARENA")
+                    .drawAt(Vec2{ 360, 492 }, Blue);
+
+                const RectF startButton{ 160, 610, 400, 82 };
+                startButton.rounded(18).draw(Blue);
+                FontAsset(U"Title")(U"タップして開始")
+                    .drawAt(startButton.center(), White);
+                FontAsset(U"Small")(U"Tap anywhere to begin")
+                    .drawAt(Vec2{ 360, 748 }, Muted);
+            }
+
+            Graphics2D::Flush();
+            gameRenderTexture.resolve();
+            gameRenderTexture.draw();
+            continue;
+        }
 
         const double deltaTime = Min(Scene::DeltaTime(), 0.05);
         phaseAge += deltaTime;

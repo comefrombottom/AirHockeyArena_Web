@@ -1454,7 +1454,7 @@ void Main()
 
                 const RectF startButton{ 160, 610, 400, 82 };
                 startButton.rounded(18).draw(Blue);
-                FontAsset(U"Title")(U"タップして開始")
+                FontAsset(U"Title")(U"タップで開始")
                     .drawAt(startButton.center(), White);
                 FontAsset(U"Small")(U"Tap anywhere to begin")
                     .drawAt(Vec2{ 360, 748 }, Muted);
@@ -2088,11 +2088,6 @@ void Main()
                     ? U"VICTORY"
                     : U"GOOD GAME";
             }
-            else if (awaitingGoal)
-            {
-                heading = U"GOAL";
-            }
-
             if (!heading.isEmpty())
             {
                 RectF{

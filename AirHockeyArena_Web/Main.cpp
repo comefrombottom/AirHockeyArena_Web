@@ -1170,8 +1170,8 @@ public:
         {
             if (client.getRole() != Client::Role::Host)
             {
-                opponentPeerID.clear();
                 ShowCenterNotice(U"相手が退出しました");
+                LeaveOnlineRoom();
                 return;
             }
 

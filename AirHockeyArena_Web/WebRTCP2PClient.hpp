@@ -164,8 +164,8 @@ namespace s3d
 		[[nodiscard]] const PeerID& getPeerID() const noexcept;
 		[[nodiscard]] const RoomID& getRoomID() const noexcept;
 		[[nodiscard]] const PeerID& getHostPeerID() const noexcept;
-		[[nodiscard]] Array<PeerID> getPeerIDs() const;
-		[[nodiscard]] Array<PeerID> getConnectedPeerIDs() const;
+		/// @brief DataChannel が開通済みのRoomメンバーを取得します。
+		[[nodiscard]] Array<PeerID> getMemberIDs() const;
 		[[nodiscard]] const RoomInfo& getRoomInfo() const noexcept;
 		[[nodiscard]] const Array<RoomInfo>& getRoomList() const noexcept;
 
@@ -228,14 +228,11 @@ namespace s3d
 		virtual void onReconnectedRoom() {}
 		virtual void onRoomError(const RoomError& error) {}
 
-		// Member events describe logical Room membership.
+		// Member events are notified only after the member's DataChannel is ready to send.
 		virtual void onMemberJoined(const PeerID& peerID) {}
 		virtual void onMemberReconnected(const PeerID& peerID) {}
 		virtual void onMemberLeft(const PeerID& peerID, MemberLeaveReason reason) {}
 
-		// Peer events describe individual WebRTC DataChannel state.
-		virtual void onPeerConnected(const PeerID& peerID) {}
-		virtual void onPeerDisconnected(const PeerID& peerID) {}
 		virtual void onRoleChanged(Role role, const PeerID& hostPeerID) {}
 
 		virtual void onRoomInfoChanged(const RoomInfo& roomInfo) {}

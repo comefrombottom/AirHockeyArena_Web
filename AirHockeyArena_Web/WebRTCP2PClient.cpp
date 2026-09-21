@@ -133,7 +133,7 @@ namespace s3d
 		RoomID roomID;
 		PeerID hostPeerID;
 		Array<PeerID> peerIDs;
-		Array<PeerID> connectedPeerIDs;
+		Array<PeerID> memberIDs;
 		RoomInfo roomInfo;
 		Array<RoomInfo> roomList;
 
@@ -178,14 +178,14 @@ namespace s3d
 					hostPeerID.clear();
 					roomID.clear();
 					peerIDs.clear();
-					connectedPeerIDs.clear();
+					memberIDs.clear();
 					roomInfo = {};
 					roomInfo.maxParticipants = 8;
 				}
 				else if (state == ClientState::LeavingRoom)
 				{
 					peerIDs.clear();
-					connectedPeerIDs.clear();
+					memberIDs.clear();
 				}
 				owner->onStateChanged(state);
 				return;
@@ -214,6 +214,7 @@ namespace s3d
 			if (type == U"member-joined")
 			{
 				const PeerID peerID = event[U"peerId"].getString();
+				addUnique(memberIDs, peerID);
 				addUnique(peerIDs, peerID);
 				roomInfo.participantCount = static_cast<int32>(peerIDs.size() + 1);
 				owner->onMemberJoined(peerID);
@@ -223,6 +224,7 @@ namespace s3d
 			if (type == U"member-reconnected")
 			{
 				const PeerID peerID = event[U"peerId"].getString();
+				addUnique(memberIDs, peerID);
 				addUnique(peerIDs, peerID);
 				roomInfo.participantCount = static_cast<int32>(peerIDs.size() + 1);
 				owner->onMemberReconnected(peerID);
@@ -233,29 +235,16 @@ namespace s3d
 			{
 				const PeerID peerID = event[U"peerId"].getString();
 				removeValue(peerIDs, peerID);
-				removeValue(connectedPeerIDs, peerID);
+				removeValue(memberIDs, peerID);
 				roomInfo.participantCount = static_cast<int32>(peerIDs.size() + 1);
 				owner->onMemberLeft(peerID, LeaveReasonFromString(event[U"reason"].getString()));
 				owner->onRoomInfoChanged(roomInfo);
 				return;
 			}
-			if (type == U"peer-connected")
-			{
-				const PeerID peerID = event[U"peerId"].getString();
-				addUnique(connectedPeerIDs, peerID);
-				owner->onPeerConnected(peerID);
-				return;
-			}
-			if (type == U"peer-disconnected")
-			{
-				const PeerID peerID = event[U"peerId"].getString();
-				removeValue(connectedPeerIDs, peerID);
-				owner->onPeerDisconnected(peerID);
-				return;
-			}
 			if (type == U"room-info")
 			{
 				updateRoomInfo(event[U"room"]);
+				updatePeerIDs(event[U"room"]);
 				owner->onRoomInfoChanged(roomInfo);
 				return;
 			}
@@ -406,8 +395,7 @@ namespace s3d
 	const WebRTCP2PClient::PeerID& WebRTCP2PClient::getPeerID() const noexcept { return m_impl->peerID; }
 	const WebRTCP2PClient::RoomID& WebRTCP2PClient::getRoomID() const noexcept { return m_impl->roomID; }
 	const WebRTCP2PClient::PeerID& WebRTCP2PClient::getHostPeerID() const noexcept { return m_impl->hostPeerID; }
-	Array<WebRTCP2PClient::PeerID> WebRTCP2PClient::getPeerIDs() const { return m_impl->peerIDs; }
-	Array<WebRTCP2PClient::PeerID> WebRTCP2PClient::getConnectedPeerIDs() const { return m_impl->connectedPeerIDs; }
+	Array<WebRTCP2PClient::PeerID> WebRTCP2PClient::getMemberIDs() const { return m_impl->memberIDs; }
 	const WebRTCP2PClient::RoomInfo& WebRTCP2PClient::getRoomInfo() const noexcept { return m_impl->roomInfo; }
 	const Array<WebRTCP2PClient::RoomInfo>& WebRTCP2PClient::getRoomList() const noexcept { return m_impl->roomList; }
 	WebRTCP2PClient::RoomID WebRTCP2PClient::GenerateRandomRoomId() { return U"room-" + UUIDValue::Generate().str(); }

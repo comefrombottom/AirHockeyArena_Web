@@ -68,6 +68,8 @@ mergeInto(LibraryManager.library, {
                 this.role = "none";
                 this.hostPeerId = null;
                 this.memberIds = new Set();
+                this.readyMemberIds = new Set();
+                this.pendingMemberNotifications = new Map();
                 this.leaveRequested = true;
                 this.generation = 0;
                 this.reconnectTimer = null;
@@ -122,6 +124,8 @@ mergeInto(LibraryManager.library, {
                 this.role = "none";
                 this.hostPeerId = null;
                 this.memberIds.clear();
+                this.readyMemberIds.clear();
+                this.pendingMemberNotifications.clear();
                 this.leaveRequested = false;
                 this.rejoinPending = false;
                 this.reconnectAttempts = 0;
@@ -155,6 +159,8 @@ mergeInto(LibraryManager.library, {
                 this.role = "none";
                 this.hostPeerId = null;
                 this.memberIds.clear();
+                this.readyMemberIds.clear();
+                this.pendingMemberNotifications.clear();
                 this.leaveRequested = false;
                 this.rejoinPending = false;
                 this.reconnectAttempts = 0;
@@ -220,12 +226,13 @@ mergeInto(LibraryManager.library, {
                 this.generation += 1;
                 this.clearReconnectTimer();
                 this.stopHeartbeat();
-                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                    try { this.socket.send(JSON.stringify({ type: "leave" })); } catch (error) {}
+                const leavingSocket = this.socket;
+                this.socket = null;
+                if (leavingSocket && leavingSocket.readyState === WebSocket.OPEN) {
+                    try { leavingSocket.send(JSON.stringify({ type: "leave" })); } catch (error) {}
                 }
                 this.closeAllPeers("left", false);
-                this.closeSocket(this.socket, 1000, "Left room");
-                this.socket = null;
+                this.closeSocket(leavingSocket, 1000, "Left room");
                 this.state = "disconnected";
                 this.enqueue({ type: "state", state: this.state });
                 this.roomId = null;
@@ -233,6 +240,8 @@ mergeInto(LibraryManager.library, {
                 this.role = "none";
                 this.hostPeerId = null;
                 this.memberIds.clear();
+                this.readyMemberIds.clear();
+                this.pendingMemberNotifications.clear();
                 this.roomInfo = { listed: true, isOpen: true, maxParticipants: 8, properties: {} };
             }
 
@@ -261,6 +270,7 @@ mergeInto(LibraryManager.library, {
                     if (this.socket !== socket || generation !== this.generation) return;
                     try {
                         this.handleSignal(JSON.parse(event.data)).catch((error) => {
+                            if (this.socket !== socket || generation !== this.generation) return;
                             this.fail(error.code || "protocol-error", error.message);
                         });
                     } catch (error) {
@@ -284,6 +294,7 @@ mergeInto(LibraryManager.library, {
                             properties: Object.assign({}, message.config || {}),
                         };
                         this.memberIds = new Set(message.peers || []);
+                        for (const peerId of this.memberIds) this.queueMemberNotification(peerId, "member-joined");
                         this.enqueueRoomInfo();
                         if (this.role === "host") {
                             await Promise.all([...this.memberIds].map((peerId) => this.startOffer(peerId)));
@@ -301,23 +312,23 @@ mergeInto(LibraryManager.library, {
                         break;
                     }
                     case "peer-joined":
-                        this.memberIds.add(message.peerId);
-                        if (message.role === "host") this.hostPeerId = message.peerId;
-                        this.enqueue({ type: "member-joined", peerId: message.peerId });
-                        if (this.role === "host") await this.startOffer(message.peerId);
-                        break;
                     case "peer-reconnected":
                         this.memberIds.add(message.peerId);
                         if (message.role === "host") this.hostPeerId = message.peerId;
-                        this.removePeer(message.peerId, "reconnected", true);
-                        this.enqueue({ type: "member-reconnected", peerId: message.peerId });
-                        if (this.role === "host") await this.startOffer(message.peerId, true);
+                        // Each membership arrival starts a new remote session.
+                        if (this.role === "host") this.startOffer(message.peerId, true).catch((error) => this.fail("protocol-error", error.message));
+                        this.queueMemberNotification(message.peerId, message.type === "peer-joined" ? "member-joined" : "member-reconnected");
+                        this.enqueueRoomInfo();
                         break;
                     case "peer-left":
                         this.memberIds.delete(message.peerId);
+                        this.pendingMemberNotifications.delete(message.peerId);
                         if (message.peerId === this.hostPeerId) this.hostPeerId = null;
-                        this.enqueue({ type: "member-left", peerId: message.peerId, reason: message.reason || "disconnected" });
+                        if (this.readyMemberIds.delete(message.peerId)) {
+                            this.enqueue({ type: "member-left", peerId: message.peerId, reason: message.reason || "disconnected" });
+                        }
                         this.removePeer(message.peerId, message.reason || "disconnected", true);
+                        this.enqueueRoomInfo();
                         break;
                     case "host-changed":
                         this.hostPeerId = message.hostPeerId || null;
@@ -337,7 +348,7 @@ mergeInto(LibraryManager.library, {
                         this.failRoomOperation(message.code || "room-error", message.message || "Room error");
                         break;
                     case "peer-repair":
-                        if (this.role === "host") await this.startOffer(message.from, true);
+                        if (this.role === "host" && this.memberIds.has(message.from)) await this.startOffer(message.from, true);
                         break;
                     case "offer":
                         await this.acceptOffer(message.from, message);
@@ -366,6 +377,22 @@ mergeInto(LibraryManager.library, {
                     peers: [...this.memberIds],
                     properties: Object.assign({}, this.roomInfo.properties),
                 } });
+            }
+
+            queueMemberNotification(peerId, type) {
+                this.pendingMemberNotifications.set(peerId, type);
+                const peer = this.peers.get(peerId);
+                if (peer && peer.dataChannel && peer.dataChannel.readyState === "open") {
+                    this.emitPendingMemberNotification(peerId);
+                }
+            }
+
+            emitPendingMemberNotification(peerId) {
+                const type = this.pendingMemberNotifications.get(peerId);
+                if (!type) return;
+                this.pendingMemberNotifications.delete(peerId);
+                this.readyMemberIds.add(peerId);
+                this.enqueue({ type, peerId });
             }
 
             maybeCompleteJoin() {
@@ -430,7 +457,9 @@ mergeInto(LibraryManager.library, {
                 peer.offerStarted = true;
                 peer.negotiationId = this.createId();
                 const offer = await peer.connection.createOffer();
+                if (this.peers.get(remotePeerId) !== peer) return;
                 await peer.connection.setLocalDescription(offer);
+                if (this.peers.get(remotePeerId) !== peer) return;
                 this.sendLocalDescription(peer, { type: "offer", to: remotePeerId, negotiationId: peer.negotiationId, offer: peer.connection.localDescription });
             }
 
@@ -441,9 +470,13 @@ mergeInto(LibraryManager.library, {
                 const peer = this.createPeer(remotePeerId, false);
                 peer.negotiationId = message.negotiationId;
                 await peer.connection.setRemoteDescription(message.offer);
+                if (this.peers.get(remotePeerId) !== peer) return;
                 await this.flushCandidates(peer);
+                if (this.peers.get(remotePeerId) !== peer) return;
                 const answer = await peer.connection.createAnswer();
+                if (this.peers.get(remotePeerId) !== peer) return;
                 await peer.connection.setLocalDescription(answer);
+                if (this.peers.get(remotePeerId) !== peer) return;
                 this.sendLocalDescription(peer, { type: "answer", to: remotePeerId, negotiationId: peer.negotiationId, answer: peer.connection.localDescription });
             }
 
@@ -451,6 +484,7 @@ mergeInto(LibraryManager.library, {
                 const peer = this.peers.get(remotePeerId);
                 if (!peer || peer.negotiationId !== message.negotiationId) return;
                 await peer.connection.setRemoteDescription(message.answer);
+                if (this.peers.get(remotePeerId) !== peer) return;
                 await this.flushCandidates(peer);
             }
 
@@ -472,14 +506,15 @@ mergeInto(LibraryManager.library, {
             }
 
             attachDataChannel(remotePeerId, peer, channel) {
+                if (this.peers.get(remotePeerId) !== peer) return;
                 peer.dataChannel = channel;
                 channel.binaryType = "arraybuffer";
                 channel.addEventListener("open", () => {
                     if (this.peers.get(remotePeerId) !== peer || peer.dataChannel !== channel) return;
                     if (!peer.openNotified) {
                         peer.openNotified = true;
-                        this.enqueue({ type: "peer-connected", peerId: remotePeerId });
                         this.maybeCompleteJoin();
+                        this.emitPendingMemberNotification(remotePeerId);
                     }
                 });
                 channel.addEventListener("message", (event) => {
@@ -642,10 +677,8 @@ mergeInto(LibraryManager.library, {
                 if (!peer) return;
                 this.peers.delete(remotePeerId);
                 if (peer.disconnectedTimer !== null) clearTimeout(peer.disconnectedTimer);
-                const wasOpen = peer.openNotified;
                 try { if (peer.dataChannel) peer.dataChannel.close(); } catch (error) {}
                 try { peer.connection.close(); } catch (error) {}
-                if (notify && wasOpen) this.enqueue({ type: "peer-disconnected", peerId: remotePeerId, reason });
             }
 
             closeAllPeers(reason, notify) {
@@ -677,6 +710,8 @@ mergeInto(LibraryManager.library, {
                 this.role = "none";
                 this.hostPeerId = null;
                 this.memberIds.clear();
+                this.readyMemberIds.clear();
+                this.pendingMemberNotifications.clear();
                 this.roomInfo = { listed: true, isOpen: true, maxParticipants: 8, properties: {} };
                 this.enqueue({ type: "error", code, message });
                 this.enqueue({ type: "state", state: this.state });

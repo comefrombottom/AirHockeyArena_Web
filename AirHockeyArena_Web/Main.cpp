@@ -242,8 +242,8 @@ namespace
         String notice = U"同じルーム名で、友達と対戦できます。";
 
         std::function<void()> joined;
-        std::function<void(const PeerID&)> peerLost;
-        std::function<void(const PeerID&)> peerReady;
+        std::function<void(const PeerID&, MemberLeaveReason)> memberLeft;
+        std::function<void(const PeerID&)> memberJoined;
         std::function<void()> reconnecting;
         std::function<void()> roomListUpdated;
         std::function<void(const RoomError&)> roomError;
@@ -259,23 +259,33 @@ namespace
             }
         }
 
-        void onPeerConnected(const PeerID& peerID) override
+        void onMemberJoined(const PeerID& peerID) override
         {
-            notice = U"対戦相手が接続しました。";
+            notice = U"メンバーが入室しました。";
 
-            if (peerReady)
+            if (memberJoined)
             {
-                peerReady(peerID);
+                memberJoined(peerID);
             }
         }
 
-        void onPeerDisconnected(const PeerID& peerID) override
+        void onMemberReconnected(const PeerID& peerID) override
         {
-            notice = U"相手の再接続を待っています。";
+            notice = U"メンバーが再入室しました。";
 
-            if (peerLost)
+            if (memberJoined)
             {
-                peerLost(peerID);
+                memberJoined(peerID);
+            }
+        }
+
+        void onMemberLeft(const PeerID& peerID, const MemberLeaveReason reason) override
+        {
+            notice = U"メンバーが退出しました。";
+
+            if (memberLeft)
+            {
+                memberLeft(peerID, reason);
             }
         }
 
@@ -870,7 +880,7 @@ void Main()
     bool mouseControl = false;
     double mousePaddleOffsetY = 0;
     bool awaitingGoal = false;
-    bool readyConnection = false;
+    bool memberReady = false;
 
     Screen screen = Screen::Title;
     bool matchmaking = false;
@@ -1037,7 +1047,7 @@ void Main()
         matchmaking = false;
         matchmakingRequestStarted = false;
         matchmakingRetryPending = false;
-        readyConnection = false;
+        memberReady = false;
         activeGuestPeerID.clear();
         spectator = false;
         ClearRematchState();
@@ -1080,28 +1090,23 @@ void Main()
         effects.trail.clear();
         effects.rally = 0;
         effects.bestRally = 0;
-        readyConnection = false;
+        memberReady = false;
         ClearRematchState();
         lastSentPosition = { -999, -999 };
     };
 
-    client.peerLost = [&](const Client::PeerID& lostPeerID)
+    client.memberLeft = [&](const Client::PeerID& lostPeerID, const Client::MemberLeaveReason)
     {
         if (!online)
         {
             return;
         }
 
-        if (client.getRole() == Client::Role::Host)
+        if (lostPeerID == activeGuestPeerID)
         {
-            if (lostPeerID != activeGuestPeerID)
-            {
-                return;
-            }
-
             activeGuestPeerID.clear();
 
-            for (const auto& peerID : client.getConnectedPeerIDs())
+            for (const auto& peerID : client.getMemberIDs())
             {
                 if (peerID != lostPeerID)
                 {
@@ -1115,7 +1120,7 @@ void Main()
             ClearRematchState();
             practice = activeGuestPeerID.isEmpty();
             awaitingGoal = false;
-            readyConnection = !activeGuestPeerID.isEmpty();
+            memberReady = !activeGuestPeerID.isEmpty();
             if (!activeGuestPeerID.isEmpty())
             {
                 SendStateToPeer(activeGuestPeerID);
@@ -1123,7 +1128,8 @@ void Main()
             return;
         }
 
-        if (lostPeerID == client.getHostPeerID())
+        if (client.getRole() == Client::Role::Host
+            && activeGuestPeerID.isEmpty())
         {
             // Keep the local CPU match alive while the Host reconnects.
             ResetMatch(game);
@@ -1131,7 +1137,7 @@ void Main()
             practice = true;
             spectator = false;
             awaitingGoal = false;
-            readyConnection = false;
+            memberReady = false;
         }
     };
 
@@ -1144,11 +1150,11 @@ void Main()
             practice = true;
             spectator = false;
             awaitingGoal = false;
-            readyConnection = false;
+            memberReady = false;
         }
     };
 
-    client.peerReady = [&](const Client::PeerID& connectedPeerID)
+    client.memberJoined = [&](const Client::PeerID& connectedPeerID)
     {
         if (client.getRole() == Client::Role::Host)
         {
@@ -1181,12 +1187,11 @@ void Main()
                 SendStateToOthers();
             }
         }
-
         practice = false;
         matchmaking = false;
         matchmakingRequestStarted = false;
         matchmakingRetryPending = false;
-        readyConnection = true;
+        memberReady = true;
     };
 
     client.roomListUpdated = [&]
@@ -1249,7 +1254,7 @@ void Main()
                 spectatorGuestPaddle = game.guestPaddle;
             }
             practice = false;
-            readyConnection = true;
+            memberReady = true;
             return;
         }
         else if (messageID == RematchStatusPacketId
@@ -1490,7 +1495,7 @@ void Main()
         if (online && client.getState() == Client::ClientState::Disconnected)
         {
             online = false;
-            readyConnection = false;
+            memberReady = false;
             game.phase = Phase::Waiting;
         }
 
@@ -1500,26 +1505,26 @@ void Main()
         const bool roomConnected =
             online
             && client.getState() == Client::ClientState::InRoom
-            && !client.getConnectedPeerIDs().isEmpty();
+            && !client.getMemberIDs().isEmpty();
         const bool linked =
             roomConnected
             && !spectator
             && (
                 (client.getRole() == Client::Role::Host
                     && !activeGuestPeerID.isEmpty()
-                    && client.getConnectedPeerIDs().contains(activeGuestPeerID))
+                    && client.getMemberIDs().contains(activeGuestPeerID))
                 || (client.getRole() == Client::Role::Client
-                    && client.getConnectedPeerIDs().contains(client.getHostPeerID()))
+                    && client.getMemberIDs().contains(client.getHostPeerID()))
             );
         const bool cpuActive = !spectator && !linked;
         const int cpuSide =
             (online && client.getRole() == Client::Role::Client) ? 0 : 1;
         const bool authority = cpuActive || (online && side == 0);
 
-        if (online && !spectator && readyConnection && !linked)
+        if (online && !spectator && memberReady && !linked)
         {
             game.phase = Phase::Waiting;
-            readyConnection = false;
+            memberReady = false;
         }
 
         const bool active = !spectator && (cpuActive || linked);
@@ -1666,7 +1671,7 @@ void Main()
             );
         }
 
-        if (active && game.phase == Phase::Countdown)
+        if ((active || spectatorPlayback) && game.phase == Phase::Countdown)
         {
             game.timer = Max(0.0, game.timer - deltaTime);
 
@@ -1678,12 +1683,16 @@ void Main()
 
             lastCountdown = number;
 
-            if (game.timer <= 0 && authority)
+            if (game.timer <= 0)
             {
                 game.phase = Phase::Playing;
                 phaseAge = 0;
                 idleClock = 0;
-                SendStateToOthers();
+
+                if (authority)
+                {
+                    SendStateToOthers();
+                }
             }
         }
         else if (active && game.phase == Phase::Goal)
@@ -1803,9 +1812,8 @@ void Main()
                 ? idleClock + deltaTime
                 : 0;
 
-            // A stationary centre puck can be outside both players' reach.
-            if (idleClock > 3
-                && Abs(game.puck.y - 320) < 80
+            // Re-serve only after the puck has been stationary for a long time.
+            if (idleClock > 30
                 && authority)
             {
                 PrepareServe(game, Random(0, 1));

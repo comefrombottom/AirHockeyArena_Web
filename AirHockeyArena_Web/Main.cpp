@@ -1168,54 +1168,8 @@ public:
 
         if (lostPeerID == opponentPeerID)
         {
-            if (client.getRole() != Client::Role::Host)
-            {
-                ShowCenterNotice(U"相手が退出しました");
-                // Keep the room. The signaling server promotes a remaining
-                // member to Host after the old Host leaves. Until that role
-                // change arrives, continue the local CPU match instead of
-                // putting the game into a blocked waiting state.
-                opponentPeerID.clear();
-                ResetMatch(game);
-                ClearRematchState();
-                practice = true;
-                matchmaking = false;
-                matchmakingRequestStarted = false;
-                matchmakingRetryPending = false;
-                awaitingGoal = false;
-                memberReady = false;
-                spectator = false;
-                return;
-            }
-
-            opponentPeerID.clear();
-
-            for (const auto& peerID : client.getMemberIDs())
-            {
-                if (peerID != lostPeerID)
-                {
-                    opponentPeerID = peerID;
-                    SendAssignment(peerID, false);
-                    break;
-                }
-            }
-
-            ShowCenterNotice(opponentPeerID.isEmpty()
-                ? U"相手が退出しました"
-                : U"相手が切り換りました");
-
-            ResetMatch(game);
-            ClearRematchState();
-            practice = opponentPeerID.isEmpty();
-            matchmaking = opponentPeerID.isEmpty();
-            matchmakingRequestStarted = opponentPeerID.isEmpty();
-            matchmakingRetryPending = false;
-            awaitingGoal = false;
-            memberReady = !opponentPeerID.isEmpty();
-            if (!opponentPeerID.isEmpty())
-            {
-                SendStateToPeer(opponentPeerID);
-            }
+            ShowCenterNotice(U"相手が退出しました");
+            LeaveOnlineRoom();
             return;
         }
 

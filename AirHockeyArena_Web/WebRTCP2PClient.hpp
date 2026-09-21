@@ -1,6 +1,7 @@
 # pragma once
 
 # include <Siv3D.hpp>
+# include <functional>
 # include <memory>
 
 namespace s3d
@@ -151,7 +152,7 @@ namespace s3d
 		WebRTCP2PClient();
 		explicit WebRTCP2PClient(const ClientOptions& options);
 
-		virtual ~WebRTCP2PClient();
+		~WebRTCP2PClient();
 
 		WebRTCP2PClient(const WebRTCP2PClient&) = delete;
 		WebRTCP2PClient& operator=(const WebRTCP2PClient&) = delete;
@@ -222,25 +223,25 @@ namespace s3d
 		}
 
 		// Room / connection events
-		virtual void onStateChanged(ClientState state) {}
-		virtual void onJoinedRoom(const RoomInfo& roomInfo) {}
-		virtual void onReconnectingRoom(ReconnectReason reason) {}
-		virtual void onReconnectedRoom() {}
-		virtual void onRoomError(const RoomError& error) {}
+		std::function<void(ClientState)> onStateChanged;
+		std::function<void(const RoomInfo&)> onJoinedRoom;
+		std::function<void(ReconnectReason)> onReconnectingRoom;
+		std::function<void()> onReconnectedRoom;
+		std::function<void(const RoomError&)> onRoomError;
 
 		// Member events are notified only after the member's DataChannel is ready to send.
-		virtual void onMemberJoined(const PeerID& peerID) {}
-		virtual void onMemberReconnected(const PeerID& peerID) {}
-		virtual void onMemberLeft(const PeerID& peerID, MemberLeaveReason reason) {}
+		std::function<void(const PeerID&)> onMemberJoined;
+		std::function<void(const PeerID&)> onMemberReconnected;
+		std::function<void(const PeerID&, MemberLeaveReason)> onMemberLeft;
 
-		virtual void onRoleChanged(Role role, const PeerID& hostPeerID) {}
+		std::function<void(Role, const PeerID&)> onRoleChanged;
 
-		virtual void onRoomInfoChanged(const RoomInfo& roomInfo) {}
-		virtual void onRoomPropertyChanged(uint8 key, StringView value) {}
-		virtual void onRoomOpenChanged(bool isOpen) {}
-		virtual void onRoomListUpdated() {}
+		std::function<void(const RoomInfo&)> onRoomInfoChanged;
+		std::function<void(uint8, StringView)> onRoomPropertyChanged;
+		std::function<void(bool)> onRoomOpenChanged;
+		std::function<void()> onRoomListUpdated;
 
-		virtual void onMessage(const PeerID& sender, MessageID messageID, Deserializer<MemoryViewReader>& reader) {}
+		std::function<void(const PeerID&, MessageID, Deserializer<MemoryViewReader>&)> onMessage;
 
 	private:
 		class Impl;

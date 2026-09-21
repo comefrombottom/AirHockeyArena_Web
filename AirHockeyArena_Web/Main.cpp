@@ -1,4 +1,4 @@
-﻿# include <Siv3D.hpp>
+# include <Siv3D.hpp>
 # include "ArenaPhysics.hpp"
 # include "WebRTCP2PClient.hpp"
 
@@ -221,113 +221,6 @@ namespace
         void SIV3D_SERIALIZE(Archive& archive)
         {
             archive(match, round, scorer, position);
-        }
-    };
-
-    class ArenaClient final : public Client
-    {
-    public:
-        ArenaClient()
-            : Client([] {
-                ClientOptions options;
-                options.signalingURL =
-                    U"wss://webrtc-p2p-signaling.webrtc-p2p-demo.workers.dev/signal";
-                // Keep this protocol separate from older test executables.
-                options.applicationId = U"air-hockey-arena-v2";
-                return options;
-            }())
-        {
-        }
-
-        String notice = U"同じルーム名で、友達と対戦できます。";
-
-        std::function<void()> joined;
-        std::function<void(const PeerID&, MemberLeaveReason)> memberLeft;
-        std::function<void(const PeerID&)> memberJoined;
-        std::function<void()> reconnecting;
-        std::function<void()> roomListUpdated;
-        std::function<void(const RoomError&)> roomError;
-        std::function<void(const PeerID&, MessageID, Deserializer<MemoryViewReader>&)> receive;
-
-        void onJoinedRoom(const RoomInfo&) override
-        {
-            notice = U"ルームに入室しました。";
-
-            if (joined)
-            {
-                joined();
-            }
-        }
-
-        void onMemberJoined(const PeerID& peerID) override
-        {
-            notice = U"メンバーが入室しました。";
-
-            if (memberJoined)
-            {
-                memberJoined(peerID);
-            }
-        }
-
-        void onMemberReconnected(const PeerID& peerID) override
-        {
-            notice = U"メンバーが再入室しました。";
-
-            if (memberJoined)
-            {
-                memberJoined(peerID);
-            }
-        }
-
-        void onMemberLeft(const PeerID& peerID, const MemberLeaveReason reason) override
-        {
-            notice = U"メンバーが退出しました。";
-
-            if (memberLeft)
-            {
-                memberLeft(peerID, reason);
-            }
-        }
-
-        void onReconnectingRoom(ReconnectReason) override
-        {
-            notice = U"再接続しています…";
-
-            if (reconnecting)
-            {
-                reconnecting();
-            }
-        }
-
-        void onRoomError(const RoomError& error) override
-        {
-            notice = error.message;
-            Logger << U"[Arena] " << error.message;
-
-            if (roomError)
-            {
-                roomError(error);
-            }
-        }
-
-        void onRoomListUpdated() override
-        {
-            if (roomListUpdated)
-            {
-                roomListUpdated();
-            }
-        }
-
-        void onMessage(
-            const PeerID& peerID,
-            MessageID messageID,
-            Deserializer<MemoryViewReader>& reader
-        ) override
-        {
-            if (receive)
-            {
-                receive(peerID, messageID, reader);
-            }
         }
     };
 
@@ -727,6 +620,13 @@ namespace
             .draw(ColorF{ White, 0.16 });
     }
 
+    void DrawPaddleCaption(const Vec2 position, const StringView text, const ColorF color)
+    {
+        const Vec2 captionPosition = position + Vec2{ 0, -48 * CourtScale };
+        FontAsset(U"Small")(text).drawAt(captionPosition + Vec2{ 0, 2 }, ColorF{ 0, 0.15, 0.25, 0.25 });
+        FontAsset(U"Small")(text).drawAt(captionPosition, color);
+    }
+
     void DrawCourt(
         const MatchState& game,
         const int side,
@@ -847,33 +747,19 @@ namespace
     }
 }
 
-void Main()
+class AirHockeyGame
 {
-    Window::SetTitle(U"Air Hockey Arena");
-    Window::SetStyle(WindowStyle::Sizable);
-    Window::Resize(720, 1200);
-    Scene::SetResizeMode(ResizeMode::Keep);
-    Scene::SetLetterbox(Ink);
-    Scene::SetTextureFilter(TextureFilter::Linear);
-    Scene::SetBackground(Ink);
-
-    FontAsset::Register(U"Display", 42, Typeface::Bold);
-    FontAsset::Register(U"Score", 44, Typeface::Bold);
-    FontAsset::Register(U"Title", 24, Typeface::Bold);
-    FontAsset::Register(U"Body", 17);
-    FontAsset::Register(U"Small", 14);
-    FontAsset::Register(U"Micro", 12);
-    FontAsset::Register(U"Icon", 24, Typeface::Icon_Awesome_Solid);
-
-    MSRenderTexture gameRenderTexture{
-        Size{ 720, 1200 },
-        TextureFormat::R8G8B8A8_Unorm,
-        HasDepth::No
-    };
-
+private:
     MatchState game;
     Effects effects;
-    ArenaClient client;
+    Client client{ []
+    {
+        Client::ClientOptions options;
+        options.signalingURL =
+            U"wss://webrtc-p2p-signaling.webrtc-p2p-demo.workers.dev/signal";
+        options.applicationId = U"air-hockey-arena-v2";
+        return options;
+    }() };
 
     bool practice = true;
     bool online = false;
@@ -881,17 +767,15 @@ void Main()
     double mousePaddleOffsetY = 0;
     bool awaitingGoal = false;
     bool memberReady = false;
-
     Screen screen = Screen::Title;
     bool matchmaking = false;
     bool matchmakingRequestStarted = false;
     bool matchmakingRetryPending = false;
     bool roomListLoading = false;
-
     Vec2 remotePaddle{ 250, 78 };
     Vec2 spectatorHostPaddle;
     Vec2 spectatorGuestPaddle;
-    Client::PeerID activeGuestPeerID;
+    Client::PeerID opponentPeerID;
     bool spectator = false;
     bool rematchRequested = false;
     bool remoteRematchRequested = false;
@@ -902,23 +786,38 @@ void Main()
     double phaseAge = 0;
     int lastCountdown = -1;
     double roomListRefreshClock = 5.0;
+    String centerNotice;
+    double centerNoticeTimer = 0;
+    int renderSide = 0;
+    int renderViewSide = 0;
+    int renderCpuSide = 1;
+    bool renderLinked = false;
+    bool renderCpuActive = true;
+    bool renderActive = false;
+    bool renderAuthority = false;
 
-    auto ClearRematchState = [&]
+    void ShowCenterNotice(const String& text)
+    {
+        centerNotice = text;
+        centerNoticeTimer = 1.6;
+    }
+
+    void ClearRematchState()
     {
         rematchRequested = false;
         remoteRematchRequested = false;
         rematchReadyCount = 0;
-    };
+    }
 
-    auto SendStateToOthers = [&]
+    void SendStateToOthers()
     {
         if (online && client.getRole() == Client::Role::Host)
         {
             (void)client.send(StatePacketId, Client::SendTarget::Others(), game);
         }
-    };
+    }
 
-    auto SendStateToPeer = [&](const Client::PeerID& peerID)
+    void SendStateToPeer(const Client::PeerID& peerID)
     {
         if (online && client.getRole() == Client::Role::Host)
         {
@@ -929,9 +828,9 @@ void Main()
                 game
             );
         }
-    };
+    }
 
-    auto SendAssignment = [&](const Client::PeerID& peerID, const bool isSpectator)
+    void SendAssignment(const Client::PeerID& peerID, const bool isSpectator)
     {
         if (client.getRole() == Client::Role::Host)
         {
@@ -942,24 +841,24 @@ void Main()
                 AssignmentPacket{ isSpectator }
             );
         }
-    };
+    }
 
-    auto SendRematchStatus = [&]
+    void SendRematchStatus()
     {
         if (online
             && client.getRole() == Client::Role::Host
-            && !activeGuestPeerID.isEmpty())
+            && !opponentPeerID.isEmpty())
         {
-            Array<Client::PeerID> recipients{ activeGuestPeerID };
+            Array<Client::PeerID> recipients{ opponentPeerID };
             (void)client.send(
                 RematchStatusPacketId,
                 Client::SendTarget::Peers(recipients),
                 RematchStatusPacket{ rematchReadyCount }
             );
         }
-    };
+    }
 
-    auto StartNewMatch = [&]
+    void StartNewMatch()
     {
         ClearRematchState();
         ResetMatch(game);
@@ -971,18 +870,18 @@ void Main()
         lastCountdown = -1;
         remotePaddle = game.guestPaddle;
         SendStateToOthers();
-    };
+    }
 
-    auto RefreshRoomList = [&]
+    void RefreshRoomList()
     {
         if (!roomListLoading)
         {
             roomListLoading = client.refreshRoomList();
             roomListRefreshClock = 0;
         }
-    };
+    }
 
-    auto StartMatchmakingRequest = [&]
+    void StartMatchmakingRequest()
     {
         if (!matchmaking || matchmakingRequestStarted)
         {
@@ -1009,16 +908,15 @@ void Main()
         if (matchmakingRequestStarted)
         {
             matchmakingRetryPending = false;
-            client.notice = U"対戦相手を待っています…";
         }
         else
         {
             matchmakingRetryPending = true;
             roomListRefreshClock = 0;
         }
-    };
+    }
 
-    auto BeginMatchmaking = [&]
+    void BeginMatchmaking()
     {
         if (client.getState() != Client::ClientState::Disconnected)
         {
@@ -1031,11 +929,10 @@ void Main()
         matchmakingRequestStarted = false;
         matchmakingRetryPending = false;
         online = false;
-        client.notice = U"対戦相手を探しています…";
         StartMatchmakingRequest();
-    };
+    }
 
-    auto LeaveOnlineRoom = [&]
+    void LeaveOnlineRoom()
     {
         if (client.getState() != Client::ClientState::Disconnected)
         {
@@ -1048,13 +945,13 @@ void Main()
         matchmakingRequestStarted = false;
         matchmakingRetryPending = false;
         memberReady = false;
-        activeGuestPeerID.clear();
+        opponentPeerID.clear();
         spectator = false;
         ClearRematchState();
         ResetMatch(game);
-    };
+    }
 
-    auto AwardGoal = [&](const int scorer)
+    void AwardGoal(const int scorer)
     {
         if (game.phase != Phase::Playing)
         {
@@ -1081,11 +978,178 @@ void Main()
         effects.Scored(game.puck);
         awaitingGoal = false;
         SendStateToOthers();
-    };
+    }
 
-    client.joined = [&]
+    void UpdateMenuInput(
+        const bool linked,
+        const bool active,
+        const bool authority
+    )
+    {
+        if (screen == Screen::Lobby)
+        {
+            if (RectF{ 36, 25, 56, 56 }.leftClicked())
+            {
+                screen = Screen::Game;
+                return;
+            }
+
+            if (client.getState() == Client::ClientState::Disconnected
+                && RectF{ 258, 25, 350, 56 }.leftClicked())
+            {
+                Client::RoomCreationInfo creationInfo;
+                creationInfo.listed = true;
+                creationInfo.isOpen = true;
+                creationInfo.maxParticipants = 8;
+                creationInfo.properties[1] = U"Neon Rally / v2 / manual";
+
+                if (client.createRoom(
+                        Client::GenerateRandomRoomId(),
+                        creationInfo
+                    ))
+                {
+                    screen = Screen::Game;
+                    practice = true;
+                    matchmaking = true;
+                    matchmakingRequestStarted = true;
+                    matchmakingRetryPending = false;
+                    online = false;
+                }
+            }
+
+            if (client.getState() == Client::ClientState::Disconnected
+                && RectF{ 625, 106, 50, 50 }.leftClicked())
+            {
+                RefreshRoomList();
+            }
+
+            const auto& rooms = client.getRoomList();
+            const size_t visibleRoomCount = Min<size_t>(rooms.size(), 10);
+            for (size_t index = 0; index < visibleRoomCount; ++index)
+            {
+                const auto& roomInfo = rooms[index];
+                const double y = 180 + static_cast<double>(index) * 78;
+                const bool joinable =
+                    roomInfo.isOpen
+                    && roomInfo.participantCount < roomInfo.maxParticipants;
+                const bool isCurrentRoom = roomInfo.id == client.getRoomID();
+
+                if (joinable
+                    && !isCurrentRoom
+                    && RectF{ 36, y, 648, 64 }.leftClicked())
+                {
+                    if (client.joinRoom(roomInfo.id))
+                    {
+                        screen = Screen::Game;
+                        practice = true;
+                        matchmaking = false;
+                        matchmakingRequestStarted = false;
+                    }
+                    break;
+                }
+            }
+
+            return;
+        }
+
+        if (screen != Screen::Game)
+        {
+            return;
+        }
+
+        const bool disconnected =
+            client.getState() == Client::ClientState::Disconnected;
+        const bool waitingForOpponent =
+            matchmaking
+            || (online
+                && client.getRole() == Client::Role::Host
+                && opponentPeerID.isEmpty());
+
+        if (RectF{ 36, 24, 56, 56 }.leftClicked())
+        {
+#if SIV3D_PLATFORM(WEB)
+            ToggleSiv3DFullscreen();
+#else
+            Window::SetFullscreen(!Window::GetState().fullscreen);
+#endif
+        }
+
+        if (RectF{ 104, 24, 472, 56 }.leftClicked()
+            && (waitingForOpponent || disconnected || online))
+        {
+            if (waitingForOpponent || online)
+            {
+                LeaveOnlineRoom();
+            }
+            else
+            {
+                BeginMatchmaking();
+            }
+        }
+
+        if (RectF{ 586, 24, 98, 56 }.leftClicked())
+        {
+            screen = Screen::Lobby;
+            RefreshRoomList();
+        }
+
+        const bool rematchAvailable = active
+            && (online ? linked : authority);
+        const RectF rematchRect{
+            Court.x + Court.w - 100,
+            Court.y - 74,
+            100,
+            46
+        };
+
+        if (rematchRect.leftClicked()
+            && rematchAvailable)
+        {
+            if (!online)
+            {
+                StartNewMatch();
+            }
+            else
+            {
+                rematchRequested = !rematchRequested;
+
+                if (client.getRole() == Client::Role::Host)
+                {
+                    rematchReadyCount = static_cast<uint8>(
+                        (rematchRequested ? 1 : 0)
+                        + (remoteRematchRequested ? 1 : 0)
+                    );
+                    SendRematchStatus();
+
+                    if (rematchReadyCount == 2)
+                    {
+                        StartNewMatch();
+                    }
+                }
+                else
+                {
+                    rematchReadyCount = rematchRequested
+                        ? Max<uint8>(rematchReadyCount, 1)
+                        : 0;
+                    (void)client.send(
+                        RematchRequestPacketId,
+                        Client::SendTarget::Others(),
+                        RematchRequestPacket{ rematchRequested }
+                    );
+                }
+            }
+        }
+    }
+
+public:
+    AirHockeyGame()
+{
+    client.onJoinedRoom = [&](const Client::RoomInfo&)
     {
         online = true;
+        opponentPeerID = (client.getRole() == Client::Role::Client)
+            ? client.getHostPeerID()
+            : Client::PeerID{};
         practice = true;
         effects.trail.clear();
         effects.rally = 0;
@@ -1095,41 +1159,55 @@ void Main()
         lastSentPosition = { -999, -999 };
     };
 
-    client.memberLeft = [&](const Client::PeerID& lostPeerID, const Client::MemberLeaveReason)
+    client.onMemberLeft = [&](const Client::PeerID& lostPeerID, const Client::MemberLeaveReason)
     {
         if (!online)
         {
             return;
         }
 
-        if (lostPeerID == activeGuestPeerID)
+        if (lostPeerID == opponentPeerID)
         {
-            activeGuestPeerID.clear();
+            if (client.getRole() != Client::Role::Host)
+            {
+                opponentPeerID.clear();
+                ShowCenterNotice(U"相手が退出しました");
+                return;
+            }
+
+            opponentPeerID.clear();
 
             for (const auto& peerID : client.getMemberIDs())
             {
                 if (peerID != lostPeerID)
                 {
-                    activeGuestPeerID = peerID;
+                    opponentPeerID = peerID;
                     SendAssignment(peerID, false);
                     break;
                 }
             }
 
+            ShowCenterNotice(opponentPeerID.isEmpty()
+                ? U"相手が退出しました"
+                : U"相手が切り換りました");
+
             ResetMatch(game);
             ClearRematchState();
-            practice = activeGuestPeerID.isEmpty();
+            practice = opponentPeerID.isEmpty();
+            matchmaking = opponentPeerID.isEmpty();
+            matchmakingRequestStarted = opponentPeerID.isEmpty();
+            matchmakingRetryPending = false;
             awaitingGoal = false;
-            memberReady = !activeGuestPeerID.isEmpty();
-            if (!activeGuestPeerID.isEmpty())
+            memberReady = !opponentPeerID.isEmpty();
+            if (!opponentPeerID.isEmpty())
             {
-                SendStateToPeer(activeGuestPeerID);
+                SendStateToPeer(opponentPeerID);
             }
             return;
         }
 
         if (client.getRole() == Client::Role::Host
-            && activeGuestPeerID.isEmpty())
+            && opponentPeerID.isEmpty())
         {
             // Keep the local CPU match alive while the Host reconnects.
             ResetMatch(game);
@@ -1141,7 +1219,7 @@ void Main()
         }
     };
 
-    client.reconnecting = [&]
+    client.onReconnectingRoom = [&](const Client::ReconnectReason)
     {
         if (online)
         {
@@ -1154,17 +1232,17 @@ void Main()
         }
     };
 
-    client.memberJoined = [&](const Client::PeerID& connectedPeerID)
+    client.onMemberJoined = [&](const Client::PeerID& connectedPeerID)
     {
         if (client.getRole() == Client::Role::Host)
         {
             const bool assignAsSpectator =
-                !activeGuestPeerID.isEmpty()
-                && activeGuestPeerID != connectedPeerID;
+                !opponentPeerID.isEmpty()
+                && opponentPeerID != connectedPeerID;
 
             if (!assignAsSpectator)
             {
-                activeGuestPeerID = connectedPeerID;
+                opponentPeerID = connectedPeerID;
             }
 
             SendAssignment(connectedPeerID, assignAsSpectator);
@@ -1186,6 +1264,19 @@ void Main()
             {
                 SendStateToOthers();
             }
+
+            if (!assignAsSpectator)
+            {
+                ShowCenterNotice(U"対戦相手とマッチングしました");
+            }
+        }
+        else
+        {
+            if (opponentPeerID.isEmpty()
+                && connectedPeerID == client.getHostPeerID())
+            {
+                opponentPeerID = connectedPeerID;
+            }
         }
         practice = false;
         matchmaking = false;
@@ -1194,7 +1285,9 @@ void Main()
         memberReady = true;
     };
 
-    client.roomListUpdated = [&]
+    client.onMemberReconnected = client.onMemberJoined;
+
+    client.onRoomListUpdated = [&]
     {
         roomListLoading = false;
         roomListRefreshClock = 0;
@@ -1205,8 +1298,10 @@ void Main()
         }
     };
 
-    client.roomError = [&](const Client::RoomError& error)
+    client.onRoomError = [&](const Client::RoomError& error)
     {
+        Logger << U"[Arena] " << error.message;
+
         if (!matchmaking)
         {
             return;
@@ -1223,11 +1318,10 @@ void Main()
             || error.code == Client::RoomErrorCode::RoomNotFound
             || error.code == Client::RoomErrorCode::RoomAlreadyExists)
         {
-            client.notice = U"もう一度、対戦相手を探しています…";
         }
     };
 
-    client.receive = [&](const Client::PeerID& sender,
+    client.onMessage = [&](const Client::PeerID& sender,
                          const Client::MessageID messageID,
                          Deserializer<MemoryViewReader>& reader)
     {
@@ -1247,11 +1341,20 @@ void Main()
         {
             AssignmentPacket assignment;
             reader(assignment);
+            const bool wasSpectator = spectator;
             spectator = assignment.spectator;
             if (spectator)
             {
                 spectatorHostPaddle = game.hostPaddle;
                 spectatorGuestPaddle = game.guestPaddle;
+            }
+            else if (wasSpectator)
+            {
+                ShowCenterNotice(U"対戦に移りました");
+            }
+            else if (!spectator)
+            {
+                ShowCenterNotice(U"対戦相手とマッチングしました");
             }
             practice = false;
             memberReady = true;
@@ -1269,7 +1372,7 @@ void Main()
         }
         else if (messageID == RematchRequestPacketId
             && side == 0
-            && sender == activeGuestPeerID)
+            && sender == opponentPeerID)
         {
             RematchRequestPacket request;
             reader(request);
@@ -1342,7 +1445,7 @@ void Main()
             }
 
             if (client.getRole() == Client::Role::Host
-                && (move.side != 1 || sender != activeGuestPeerID))
+                && (move.side != 1 || sender != opponentPeerID))
             {
                 return;
             }
@@ -1402,7 +1505,7 @@ void Main()
         }
         else if (messageID == GoalPacketId
             && side == 0
-            && sender == activeGuestPeerID)
+            && sender == opponentPeerID)
         {
             GoalPacket goal;
             reader(goal);
@@ -1423,8 +1526,9 @@ void Main()
             }
         }
     };
-	
-    while (System::Update())
+    }
+
+    void update()
     {
         client.update();
 
@@ -1440,39 +1544,19 @@ void Main()
                 screen = Screen::Game;
             }
 
-            gameRenderTexture.clear(Ink);
-            {
-                const ScopedRenderTarget2D renderTarget{ gameRenderTexture };
-
-                for (int x = 0; x < 720; x += 48)
-                {
-                    Line{ x, 0, x, 1200 }.draw(
-                        1,
-                        ColorF{ 0.18, 0.49, 0.82, 0.045 }
-                    );
-                }
-
-                FontAsset(U"Display")(U"AIR HOCKEY")
-                    .drawAt(Vec2{ 360, 430 }, Text);
-                FontAsset(U"Display")(U"ARENA")
-                    .drawAt(Vec2{ 360, 492 }, Blue);
-
-                const RectF startButton{ 160, 610, 400, 82 };
-                startButton.rounded(18).draw(Blue);
-                FontAsset(U"Title")(U"タップで開始")
-                    .drawAt(startButton.center(), White);
-                FontAsset(U"Small")(U"Tap anywhere to begin")
-                    .drawAt(Vec2{ 360, 748 }, Muted);
-            }
-
-            Graphics2D::Flush();
-            gameRenderTexture.resolve();
-            gameRenderTexture.draw();
-            continue;
+            return;
         }
 
         const double deltaTime = Min(Scene::DeltaTime(), 0.05);
         phaseAge += deltaTime;
+        if (centerNoticeTimer > 0)
+        {
+            centerNoticeTimer = Max(0.0, centerNoticeTimer - deltaTime);
+            if (centerNoticeTimer <= 0)
+            {
+                centerNotice.clear();
+            }
+        }
 
         roomListRefreshClock += deltaTime;
         const double roomListRefreshInterval = 5.0;
@@ -1511,15 +1595,19 @@ void Main()
             && !spectator
             && (
                 (client.getRole() == Client::Role::Host
-                    && !activeGuestPeerID.isEmpty()
-                    && client.getMemberIDs().contains(activeGuestPeerID))
+                    && !opponentPeerID.isEmpty()
+                    && client.getMemberIDs().contains(opponentPeerID))
                 || (client.getRole() == Client::Role::Client
                     && client.getMemberIDs().contains(client.getHostPeerID()))
             );
+
         const bool cpuActive = !spectator && !linked;
         const int cpuSide =
             (online && client.getRole() == Client::Role::Client) ? 0 : 1;
         const bool authority = cpuActive || (online && side == 0);
+        const bool active = !spectator && (cpuActive || linked);
+
+        UpdateMenuInput(linked, active, authority);
 
         if (online && !spectator && memberReady && !linked)
         {
@@ -1527,7 +1615,6 @@ void Main()
             memberReady = false;
         }
 
-        const bool active = !spectator && (cpuActive || linked);
         const bool spectatorPlayback = spectator && roomConnected;
 
         const RectF rematchControl{
@@ -1844,9 +1931,48 @@ void Main()
             game.phase == Phase::Playing && !awaitingGoal
         );
 
-        gameRenderTexture.clear(Ink);
+        renderSide = side;
+        renderViewSide = viewSide;
+        renderCpuSide = cpuSide;
+        renderLinked = linked;
+        renderCpuActive = cpuActive;
+        renderActive = active;
+        renderAuthority = authority;
+    }
+
+    void draw()
+    {
+        if (screen == Screen::Title)
         {
-            const ScopedRenderTarget2D renderTarget{ gameRenderTexture };
+            for (int x = 0; x < 720; x += 48)
+            {
+                Line{ x, 0, x, 1200 }.draw(
+                    1,
+                    ColorF{ 0.18, 0.49, 0.82, 0.045 }
+                );
+            }
+
+            FontAsset(U"Display")(U"AIR HOCKEY")
+                .drawAt(Vec2{ 360, 430 }, Text);
+            FontAsset(U"Display")(U"ARENA")
+                .drawAt(Vec2{ 360, 492 }, Blue);
+
+            const RectF startButton{ 160, 610, 400, 82 };
+            startButton.rounded(18).draw(Blue);
+            FontAsset(U"Title")(U"タップで開始")
+                .drawAt(startButton.center(), White);
+            FontAsset(U"Small")(U"Tap anywhere to begin")
+                .drawAt(Vec2{ 360, 748 }, Muted);
+            return;
+        }
+
+        const int side = renderSide;
+        const int viewSide = renderViewSide;
+        const int cpuSide = renderCpuSide;
+        const bool linked = renderLinked;
+        const bool cpuActive = renderCpuActive;
+        const bool active = renderActive;
+        const bool authority = renderAuthority;
 
             // -----------------------------------------------------------------
             // Portrait UI
@@ -1859,49 +1985,22 @@ void Main()
 
         if (screen == Screen::Lobby)
         {
-            if (DrawIconButton({ 36, 25, 56, 56 }, U"\uf060"))
-            {
-                screen = Screen::Game;
-            }
+            DrawIconButton({ 36, 25, 56, 56 }, U"\uf060");
 
-            if (DrawButtonWithIcon(
-                    { 258, 25, 350, 56 },
-                    U"\uf067",
-                    U"部屋を作成",
-                    client.getState() == Client::ClientState::Disconnected,
-                    true
-                ))
-            {
-                Client::RoomCreationInfo creationInfo;
-                creationInfo.listed = true;
-                creationInfo.isOpen = true;
-                creationInfo.maxParticipants = 8;
-                creationInfo.properties[1] = U"Neon Rally / v2 / manual";
-
-                if (client.createRoom(
-                        Client::GenerateRandomRoomId(),
-                        creationInfo
-                    ))
-                {
-                    screen = Screen::Game;
-                    practice = true;
-                    matchmaking = true;
-                    matchmakingRequestStarted = true;
-                    matchmakingRetryPending = false;
-                    online = false;
-                    client.notice = U"公開ルームを作成しています…";
-                }
-            }
+            DrawButtonWithIcon(
+                { 258, 25, 350, 56 },
+                U"\uf067",
+                U"部屋を作成",
+                client.getState() == Client::ClientState::Disconnected,
+                true
+            );
 
             DrawPanel({ 36, 104, 576, 54 });
             FontAsset(U"Small")(U"公開中の部屋").draw(56, 122, Text);
-            if (DrawRefreshButton(
-                    { 650, 131 },
-                    client.getState() == Client::ClientState::Disconnected
-                ))
-            {
-                RefreshRoomList();
-            }
+            DrawRefreshButton(
+                { 650, 131 },
+                client.getState() == Client::ClientState::Disconnected
+            );
 
             const auto& rooms = client.getRoomList();
 
@@ -1969,17 +2068,6 @@ void Main()
                         isCurrentRoom ? Red : (canEnter ? Blue : Muted)
                     );
 
-                    if (canEnter && row.leftClicked())
-                    {
-                        if (client.joinRoom(roomInfo.id))
-                        {
-                            screen = Screen::Game;
-                            practice = true;
-                            matchmaking = false;
-                            matchmakingRequestStarted = false;
-                            client.notice = U"部屋に入室しています…";
-                        }
-                    }
                 }
             }
 
@@ -1988,44 +2076,32 @@ void Main()
         {
             const bool disconnected =
                 client.getState() == Client::ClientState::Disconnected;
+            const bool waitingForOpponent =
+                matchmaking
+                || (online
+                    && client.getRole() == Client::Role::Host
+                    && opponentPeerID.isEmpty());
 
             const String onlineLabel = spectator
                 ? U"観戦中"
-                : (matchmaking
+                : (waitingForOpponent
                     ? U"待機中…"
-                    : (online && linked ? U"オンライン対戦中" : U"オンライン対戦"));
+                    : (online && linked ? U"オンライン対戦中 (退出)" : U"オンライン対戦"));
 
             const bool fullscreen = IsSiv3DFullscreen();
-            if (DrawIconButton(
-                    { 36, 24, 56, 56 },
-                    fullscreen ? U"\uf066" : U"\uf065"
-                ))
-            {
-#if SIV3D_PLATFORM(WEB)
-                ToggleSiv3DFullscreen();
-#else
-                Window::SetFullscreen(!Window::GetState().fullscreen);
-#endif
-            }
+            DrawIconButton(
+                { 36, 24, 56, 56 },
+                fullscreen ? U"\uf066" : U"\uf065"
+            );
 
-            if (DrawButton(
-                    { 104, 24, 472, 56 },
-                    onlineLabel,
-                    matchmaking || disconnected || online,
-                    !online && !matchmaking
-                ))
-            {
-                if (matchmaking || online)
-                {
-                    LeaveOnlineRoom();
-                }
-                else
-                {
-                    BeginMatchmaking();
-                }
-            }
+            DrawButton(
+                { 104, 24, 472, 56 },
+                onlineLabel,
+                waitingForOpponent || disconnected || online,
+                !online && !matchmaking
+            );
 
-            if (matchmaking)
+            if (waitingForOpponent)
             {
                 const Vec2 center{ 550, 52 };
                 const double angle = Scene::Time() * 5;
@@ -2036,11 +2112,7 @@ void Main()
                 }.draw(3, Blue);
             }
 
-            if (DrawIconButton({ 586, 24, 98, 56 }, U"\uf03a"))
-            {
-                screen = Screen::Lobby;
-                RefreshRoomList();
-            }
+            DrawIconButton({ 586, 24, 98, 56 }, U"\uf03a");
 
             const int displaySide = viewSide;
 
@@ -2075,8 +2147,24 @@ void Main()
                 effects
             );
 
+            if (cpuActive)
+            {
+                const Vec2 cpuPaddle = (cpuSide == 0)
+                    ? displayedHostPaddle
+                    : displayedGuestPaddle;
+                DrawPaddleCaption(
+                    ToViewPosition(cpuPaddle, displaySide),
+                    U"CPU",
+                    Blue
+                );
+            }
+
             String heading;
-            if (game.phase == Phase::Waiting)
+            if (centerNoticeTimer > 0)
+            {
+                heading = centerNotice;
+            }
+            else if (game.phase == Phase::Waiting)
             {
                 heading = U"WAITING";
             }
@@ -2104,8 +2192,16 @@ void Main()
                     Court.w - 50,
                     146
                 }.rounded(12).draw(ColorF{ White, 0.94 });
-                FontAsset(U"Display")(heading)
-                    .drawAt(Court.center(), Text);
+                if (centerNoticeTimer > 0)
+                {
+                    FontAsset(U"Title")(heading)
+                        .drawAt(Court.center(), Text);
+                }
+                else
+                {
+                    FontAsset(U"Display")(heading)
+                        .drawAt(Court.center(), Text);
+                }
             }
             else if (phaseAge < 0.65)
             {
@@ -2134,8 +2230,9 @@ void Main()
                 (client.getRole() == Client::Role::Host) ? Blue : Red;
             const bool opponentRematchReady =
                 onlineRematch && !rematchRequested && (rematchReadyCount > 0);
-            const bool rematchClicked = onlineRematch
-                ? DrawRematchButton(
+            if (onlineRematch)
+            {
+                DrawRematchButton(
                     rematchRect,
                     rematchLabel,
                     rematchAvailable,
@@ -2143,55 +2240,59 @@ void Main()
                     opponentRematchReady,
                     selfRematchColor,
                     opponentRematchColor
-                )
-                : DrawButton(
+                );
+            }
+            else
+            {
+                DrawButton(
                     rematchRect,
                     rematchLabel,
                     rematchAvailable,
                     false
                 );
-
-            if (rematchClicked)
-            {
-                if (!online)
-                {
-                    StartNewMatch();
-                }
-                else
-                {
-                    rematchRequested = !rematchRequested;
-
-                    if (client.getRole() == Client::Role::Host)
-                    {
-                        rematchReadyCount =
-                            static_cast<uint8>(
-                                (rematchRequested ? 1 : 0)
-                                + (remoteRematchRequested ? 1 : 0)
-                            );
-                        SendRematchStatus();
-
-                        if (rematchReadyCount == 2)
-                        {
-                            StartNewMatch();
-                        }
-                    }
-                    else
-                    {
-                        rematchReadyCount = rematchRequested
-                            ? Max<uint8>(rematchReadyCount, 1)
-                            : 0;
-                        (void)client.send(
-                            RematchRequestPacketId,
-                            Client::SendTarget::Others(),
-                            RematchRequestPacket{ rematchRequested }
-                        );
-                    }
-                }
             }
 
             }
+    }
+};
+
+void Main()
+{
+    Window::SetTitle(U"Air Hockey Arena");
+    Window::SetStyle(WindowStyle::Sizable);
+    Window::Resize(720, 1200);
+    Scene::SetResizeMode(ResizeMode::Keep);
+    Scene::SetLetterbox(Ink);
+    Scene::SetTextureFilter(TextureFilter::Linear);
+    Scene::SetBackground(Ink);
+
+    FontAsset::Register(U"Display", 42, Typeface::Bold);
+    FontAsset::Register(U"Score", 44, Typeface::Bold);
+    FontAsset::Register(U"Title", 24, Typeface::Bold);
+    FontAsset::Register(U"Body", 17);
+    FontAsset::Register(U"Small", 14);
+    FontAsset::Register(U"Micro", 12);
+    FontAsset::Register(U"Icon", 24, Typeface::Icon_Awesome_Solid);
+
+    MSRenderTexture gameRenderTexture{
+        Size{ 720, 1200 },
+        TextureFormat::R8G8B8A8_Unorm,
+        HasDepth::No
+    };
+
+    AirHockeyGame game;
+
+    while (System::Update())
+    {
+        game.update();
+
+        gameRenderTexture.clear(Ink);
+        {
+            const ScopedRenderTarget2D renderTarget{ gameRenderTexture };
+            game.draw();
         }
-		Graphics2D::Flush();
+
+        Graphics2D::Flush();
         gameRenderTexture.resolve();
         gameRenderTexture.draw();
     }

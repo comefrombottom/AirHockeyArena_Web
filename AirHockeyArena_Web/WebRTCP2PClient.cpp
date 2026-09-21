@@ -187,20 +187,26 @@ namespace s3d
 					peerIDs.clear();
 					memberIDs.clear();
 				}
-				owner->onStateChanged(state);
+				if (owner->onStateChanged) owner->onStateChanged(state);
 				return;
 			}
 			if (type == U"joined" || type == U"reconnected")
 			{
 				updateRoomInfo(event[U"room"]);
 				updatePeerIDs(event[U"room"]);
-				if (type == U"joined") owner->onJoinedRoom(roomInfo);
-				else owner->onReconnectedRoom();
+				if (type == U"joined")
+				{
+					if (owner->onJoinedRoom) owner->onJoinedRoom(roomInfo);
+				}
+				else if (owner->onReconnectedRoom)
+				{
+					owner->onReconnectedRoom();
+				}
 				return;
 			}
 			if (type == U"reconnecting")
 			{
-				owner->onReconnectingRoom(ReconnectReason::SignalingLost);
+				if (owner->onReconnectingRoom) owner->onReconnectingRoom(ReconnectReason::SignalingLost);
 				return;
 			}
 			if (type == U"role")
@@ -208,7 +214,7 @@ namespace s3d
 				const Role previous = role;
 				role = RoleFromString(event[U"role"].getString());
 				hostPeerID = event[U"hostPeerId"].getString();
-				if (previous != role) owner->onRoleChanged(role, hostPeerID);
+				if (previous != role && owner->onRoleChanged) owner->onRoleChanged(role, hostPeerID);
 				return;
 			}
 			if (type == U"member-joined")
@@ -217,8 +223,8 @@ namespace s3d
 				addUnique(memberIDs, peerID);
 				addUnique(peerIDs, peerID);
 				roomInfo.participantCount = static_cast<int32>(peerIDs.size() + 1);
-				owner->onMemberJoined(peerID);
-				owner->onRoomInfoChanged(roomInfo);
+				if (owner->onMemberJoined) owner->onMemberJoined(peerID);
+				if (owner->onRoomInfoChanged) owner->onRoomInfoChanged(roomInfo);
 				return;
 			}
 			if (type == U"member-reconnected")
@@ -227,8 +233,8 @@ namespace s3d
 				addUnique(memberIDs, peerID);
 				addUnique(peerIDs, peerID);
 				roomInfo.participantCount = static_cast<int32>(peerIDs.size() + 1);
-				owner->onMemberReconnected(peerID);
-				owner->onRoomInfoChanged(roomInfo);
+				if (owner->onMemberReconnected) owner->onMemberReconnected(peerID);
+				if (owner->onRoomInfoChanged) owner->onRoomInfoChanged(roomInfo);
 				return;
 			}
 			if (type == U"member-left")
@@ -237,15 +243,15 @@ namespace s3d
 				removeValue(peerIDs, peerID);
 				removeValue(memberIDs, peerID);
 				roomInfo.participantCount = static_cast<int32>(peerIDs.size() + 1);
-				owner->onMemberLeft(peerID, LeaveReasonFromString(event[U"reason"].getString()));
-				owner->onRoomInfoChanged(roomInfo);
+				if (owner->onMemberLeft) owner->onMemberLeft(peerID, LeaveReasonFromString(event[U"reason"].getString()));
+				if (owner->onRoomInfoChanged) owner->onRoomInfoChanged(roomInfo);
 				return;
 			}
 			if (type == U"room-info")
 			{
 				updateRoomInfo(event[U"room"]);
 				updatePeerIDs(event[U"room"]);
-				owner->onRoomInfoChanged(roomInfo);
+				if (owner->onRoomInfoChanged) owner->onRoomInfoChanged(roomInfo);
 				return;
 			}
 			if (type == U"room-list")
@@ -258,14 +264,14 @@ namespace s3d
 					readRoomInfo(info, rooms[i]);
 					roomList << std::move(info);
 				}
-				owner->onRoomListUpdated();
+				if (owner->onRoomListUpdated) owner->onRoomListUpdated();
 				return;
 			}
 			if (type == U"message")
 			{
 				const Blob payload = Base64::Decode(event[U"payload"].getString(), SkipValidation::Yes);
 				Deserializer<MemoryViewReader> reader(payload.data(), payload.size());
-				owner->onMessage(event[U"from"].getString(), event[U"id"].get<uint32>(), reader);
+				if (owner->onMessage) owner->onMessage(event[U"from"].getString(), event[U"id"].get<uint32>(), reader);
 				return;
 			}
 			if (type == U"error")
@@ -273,7 +279,7 @@ namespace s3d
 				RoomError error;
 				error.code = ErrorCodeFromString(event[U"code"].getString());
 				error.message = event[U"message"].getString();
-				owner->onRoomError(error);
+				if (owner->onRoomError) owner->onRoomError(error);
 				return;
 			}
 		}

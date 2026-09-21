@@ -1171,7 +1171,20 @@ public:
             if (client.getRole() != Client::Role::Host)
             {
                 ShowCenterNotice(U"相手が退出しました");
-                LeaveOnlineRoom();
+                // Keep the room. The signaling server promotes a remaining
+                // member to Host after the old Host leaves. Until that role
+                // change arrives, continue the local CPU match instead of
+                // putting the game into a blocked waiting state.
+                opponentPeerID.clear();
+                ResetMatch(game);
+                ClearRematchState();
+                practice = true;
+                matchmaking = false;
+                matchmakingRequestStarted = false;
+                matchmakingRetryPending = false;
+                awaitingGoal = false;
+                memberReady = false;
+                spectator = false;
                 return;
             }
 
